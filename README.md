@@ -96,7 +96,9 @@ The app will open in your browser at `http://localhost:7860`
 
 ## Usage
 
-1. Launch the application
+1. Launch the application:
+   - **macOS/Linux**: `./run.sh`
+   - **Windows**: `run.bat`
 2. Use the **Upscaler** tab to process images and videos
 3. Open the **🔍 Video Comparison Modal** to see examples of different models
 4. Check out the **❤️ Support Me** tab if you find the app useful!
@@ -105,10 +107,61 @@ The app is completely free and works without any login or registration!
 
 ## Supported Upscaling Models
 
-- **RealESRGAN_x4plus** (default): 4x scale, general purpose
-- **RealESRGAN_x2plus**: 2x scale, lighter upscaling
-- **RealESRNet_x4plus**: 4x scale, cleaner output
-- **RealESRGAN_x4plus_anime_6B**: 4x scale, optimized for anime/cartoon content
+### RealESRGAN_x4plus (default)
+4x scale, general purpose
+
+<table>
+<tr>
+<td><b>Base</b></td>
+<td><b>Upscaled</b></td>
+</tr>
+<tr>
+<td><video src="example/example_video/base.mp4" width="300" controls></video></td>
+<td><video src="example/example_video/example RealESRGAN_x4plus.mp4" width="300" controls></video></td>
+</tr>
+</table>
+
+### RealESRGAN_x2plus
+2x scale, lighter upscaling
+
+<table>
+<tr>
+<td><b>Base</b></td>
+<td><b>Upscaled</b></td>
+</tr>
+<tr>
+<td><video src="example/example_video/base.mp4" width="300" controls></video></td>
+<td><video src="example/example_video/example RealESRGAN_x2plus.mp4" width="300" controls></video></td>
+</tr>
+</table>
+
+### RealESRNet_x4plus
+4x scale, cleaner output
+
+<table>
+<tr>
+<td><b>Base</b></td>
+<td><b>Upscaled</b></td>
+</tr>
+<tr>
+<td><video src="example/example_video/base.mp4" width="300" controls></video></td>
+<td><video src="example/example_video/example RealESRNet_x4plus.mp4" width="300" controls></video></td>
+</tr>
+</table>
+
+### RealESRGAN_x4plus_anime_6B
+4x scale, optimized for anime/cartoon content
+
+<table>
+<tr>
+<td><b>Base</b></td>
+<td><b>Upscaled</b></td>
+</tr>
+<tr>
+<td><video src="example/example_video/base.mp4" width="300" controls></video></td>
+<td><video src="example/example_video/example RealESRGAN_x4plus_anime_6B.mp4" width="300" controls></video></td>
+</tr>
+</table>
 
 ## Features in Detail
 
