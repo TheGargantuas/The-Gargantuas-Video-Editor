@@ -107,61 +107,14 @@ The app is completely free and works without any login or registration!
 
 ## Supported Upscaling Models
 
-### RealESRGAN_x4plus (default)
-4x scale, general purpose
+| Model | Description | Base Video | Example Video |
+|-------|-------------|------------|---------------|
+| **RealESRGAN_x4plus** (default) | 4x scale, general purpose | [▶️ Base](example/example_video/base.mp4) | [▶️ Upscaled](example/example_video/example%20RealESRGAN_x4plus.mp4) |
+| **RealESRGAN_x2plus** | 2x scale, lighter upscaling | [▶️ Base](example/example_video/base.mp4) | [▶️ Upscaled](example/example_video/example%20RealESRGAN_x2plus.mp4) |
+| **RealESRNet_x4plus** | 4x scale, cleaner output | [▶️ Base](example/example_video/base.mp4) | [▶️ Upscaled](example/example_video/example%20RealESRNet_x4plus.mp4) |
+| **RealESRGAN_x4plus_anime_6B** | 4x scale, optimized for anime/cartoon content | [▶️ Base](example/example_video/base.mp4) | [▶️ Upscaled](example/example_video/example%20RealESRGAN_x4plus_anime_6B.mp4) |
 
-<table>
-<tr>
-<td><b>Base</b></td>
-<td><b>Upscaled</b></td>
-</tr>
-<tr>
-<td><video src="example/example_video/base.mp4" width="300" controls></video></td>
-<td><video src="example/example_video/example RealESRGAN_x4plus.mp4" width="300" controls></video></td>
-</tr>
-</table>
-
-### RealESRGAN_x2plus
-2x scale, lighter upscaling
-
-<table>
-<tr>
-<td><b>Base</b></td>
-<td><b>Upscaled</b></td>
-</tr>
-<tr>
-<td><video src="example/example_video/base.mp4" width="300" controls></video></td>
-<td><video src="example/example_video/example RealESRGAN_x2plus.mp4" width="300" controls></video></td>
-</tr>
-</table>
-
-### RealESRNet_x4plus
-4x scale, cleaner output
-
-<table>
-<tr>
-<td><b>Base</b></td>
-<td><b>Upscaled</b></td>
-</tr>
-<tr>
-<td><video src="example/example_video/base.mp4" width="300" controls></video></td>
-<td><video src="example/example_video/example RealESRNet_x4plus.mp4" width="300" controls></video></td>
-</tr>
-</table>
-
-### RealESRGAN_x4plus_anime_6B
-4x scale, optimized for anime/cartoon content
-
-<table>
-<tr>
-<td><b>Base</b></td>
-<td><b>Upscaled</b></td>
-</tr>
-<tr>
-<td><video src="example/example_video/base.mp4" width="300" controls></video></td>
-<td><video src="example/example_video/example RealESRGAN_x4plus_anime_6B.mp4" width="300" controls></video></td>
-</tr>
-</table>
+> 💡 **Tip**: Download the repository to view the example videos locally and compare the quality differences between models.
 
 ## Features in Detail
 
