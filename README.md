@@ -105,6 +105,32 @@ The app will open in your browser at `http://localhost:7860`
 
 The app is completely free and works without any login or registration!
 
+### Interface Overview
+
+#### 1. Model Selection
+Select your preferred upscaling model and the compute device (CPU, CUDA, or MPS) based on your hardware.
+
+![Model Selection](img/gradio/select%20model.png)
+
+#### 2. Upload and Processing
+Upload your image or video file, set the FPS for videos (0 keeps the original FPS - recommended), and click the **Upscale** button. The progress bar will show:
+- Processing progress
+- Average time per frame
+- Estimated time remaining
+
+The upscaled result will appear on the right once processing is complete.
+
+![Upload and Elaboration](img/gradio/upload_elab.png)
+
+#### 3. Video Comparison Modal
+Compare all models side-by-side! This modal displays 4 pairs of videos:
+- Left side: Original base video
+- Right side: Upscaled result for each of the 4 models
+
+Perfect for choosing the best model for your content!
+
+![Models Comparison](img/gradio/models_comparison.png)
+
 ## Supported Upscaling Models
 
 | Model | Description | Base Video | Example Video |
