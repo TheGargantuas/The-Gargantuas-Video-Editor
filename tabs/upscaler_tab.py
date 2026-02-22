@@ -70,7 +70,7 @@ class UpscalerTab:
             self.current_model_name = None
             return f"✗ Error loading model: {str(e)}"
     
-    def upscale_image(self, input_image, model_name, device, output_format="png"):
+    def upscale_image(self, input_image, model_name, device, input_format="png"):
         """Upscale a single image"""
         if input_image is None:
             return None, "Please upload an image"
@@ -101,15 +101,16 @@ class UpscalerTab:
             # Convert to PIL Image
             output_image = Image.fromarray(output)
             
-            # Save to temp file
-            output_path = self.temp_manager.get_temp_file_path(f"upscaled_image.{output_format}")
-            output_image.save(output_path, format=output_format.upper())
+            # Save to temp file with same format as input
+            output_path = self.temp_manager.get_temp_file_path(f"upscaled_image.{input_format}")
+            output_image.save(output_path, format=input_format.upper())
             
             info = f"✓ Image upscaled successfully\n{load_msg}\n"
             info += f"Original size: {img.shape[1]}x{img.shape[0]}\n"
             info += f"Upscaled size: {output.shape[1]}x{output.shape[0]}"
             
-            return output_image, info
+            # Return the file path instead of PIL Image to preserve format
+            return output_path, info
             
         except Exception as e:
             return None, f"✗ Error upscaling image: {str(e)}"
@@ -301,7 +302,7 @@ class UpscalerTab:
             traceback.print_exc()
             return None, f"✗ Error upscaling video: {str(e)}"
     
-    def upscale_file(self, input_file, model_name, device, fps=None, output_format="png", progress=gr.Progress()):
+    def upscale_file(self, input_file, model_name, device, fps=None, progress=gr.Progress()):
         """Unified upscaling function that auto-detects file type"""
         if input_file is None:
             return None, None, "Please upload a file", gr.update(visible=False), gr.update(visible=False)
@@ -319,7 +320,12 @@ class UpscalerTab:
             # Process as image
             from PIL import Image
             img = Image.open(file_path)
-            result, info = self.upscale_image(img, model_name, device, output_format)
+            # Use the same format as input (strip the dot from extension)
+            input_format = ext[1:]  # Remove the leading dot
+            # Handle jpeg -> jpg conversion
+            if input_format == 'jpeg':
+                input_format = 'jpg'
+            result, info = self.upscale_image(img, model_name, device, input_format)
             return result, None, info, gr.update(visible=True), gr.update(visible=False)
         
         elif ext in video_exts:
@@ -383,18 +389,12 @@ class UpscalerTab:
                     
                     # Options row
                     with gr.Row():
-                        image_format = gr.Radio(
-                            choices=["png", "jpg", "webp"],
-                            value="png",
-                            label="Image Output Format",
-                            info="Only for images"
-                        )
                         video_fps = gr.Number(
                             label="Video FPS (0 = original)",
                             value=0,
                             minimum=0,
                             maximum=120,
-                            info="Only for videos"
+                            info="Only for videos. Output images keep original format."
                         )
                     
                     upscale_btn = gr.Button("🚀 Upscale", variant="primary", size="lg")
@@ -403,7 +403,7 @@ class UpscalerTab:
                     # Output containers
                     image_output = gr.Image(
                         label="Upscaled Image",
-                        type="pil",
+                        type="filepath",
                         visible=False
                     )
                     video_output = gr.Video(
@@ -417,7 +417,7 @@ class UpscalerTab:
             
             upscale_btn.click(
                 fn=self.upscale_file,
-                inputs=[file_input, model_dropdown, device_dropdown, video_fps, image_format],
+                inputs=[file_input, model_dropdown, device_dropdown, video_fps],
                 outputs=[image_output, video_output, info_output, image_output, video_output]
             )
             
