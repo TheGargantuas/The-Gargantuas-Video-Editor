@@ -37,6 +37,17 @@ Documentazione tecnica sulla patch di compatibilità OpenCV.
 
 ---
 
+### 🌐 [Remote Upscaling API](REMOTE_UPSCALING_API.md)
+Guida completa per integrare l'upscaling su GPU Colab in un'altra applicazione.
+
+**Contenuti:**
+- Avvio e protezione dell'endpoint pubblico Gradio
+- Client Python riutilizzabile per file, PIL e frame OpenCV
+- Contratto REST/SSE e struttura delle risposte
+- Modelli, configurazione, errori e prestazioni video
+
+---
+
 ### 🏗️ [Project Structure](PROJECT_STRUCTURE.md)
 Organizzazione del codice e struttura del progetto.
 
@@ -65,6 +76,7 @@ Storia delle versioni e aggiornamenti del progetto.
 | **README Principale** | [../README.md](../README.md) |
 | **Installazione Setup** | [QUICKSTART.md](QUICKSTART.md) |
 | **Guida LipSync** | [LIPSYNC.md](LIPSYNC.md) |
+| **Remote Upscaling API** | [REMOTE_UPSCALING_API.md](REMOTE_UPSCALING_API.md) |
 | **Struttura Progetto** | [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) |
 
 ## 🆘 Hai Bisogno di Aiuto?
@@ -73,6 +85,7 @@ Storia delle versioni e aggiornamenti del progetto.
 2. **Errori LipSync?** → Vedi [LIPSYNC.md](LIPSYNC.md) sezione "Risoluzione Problemi"
 3. **Errori OpenCV?** → Leggi [OPENCV_PATCH.md](OPENCV_PATCH.md)
 4. **File non trovati?** → Controlla [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md)
+5. **Integrazione Colab da un'altra app?** → Consulta [REMOTE_UPSCALING_API.md](REMOTE_UPSCALING_API.md)
 
 ## 📌 Note
 

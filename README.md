@@ -55,6 +55,23 @@ The Gradio interface will open in a new browser tab. You're ready to use all the
 > - For best performance on Colab, use videos **shorter than 30 seconds** to avoid timeouts
 > - Check [Colab Setup Guide](colab/COLAB_SETUP.md) if you get errors
 
+### Use the Colab GPU from a local application
+
+The public Gradio URL also exposes a named `upscale_image` API. You can send a
+local image or OpenCV frame, select a RealESRGAN model, and receive the upscaled
+result while inference runs on the Colab GPU:
+
+```bash
+python remote_upscale_client.py \
+  --url https://your-session.gradio.live \
+  --input frame.png \
+  --output frame_upscaled.png \
+  --model RealESRGAN_x4plus
+```
+
+See the [Remote Upscaling API guide](docs/REMOTE_UPSCALING_API.md) for Python,
+raw REST, optional token authentication, and OpenCV frame examples.
+
 ---
 
 ## Setup
@@ -476,4 +493,3 @@ For issues, suggestions, or questions, feel free to contact me at:
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-

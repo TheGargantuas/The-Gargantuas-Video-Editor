@@ -13,8 +13,11 @@ from realesrgan import RealESRGANer
 from config.config import MODELS
 import ffmpeg
 import os
+import secrets
 import time
 import shutil
+
+from utils.remote_upscale import decode_image_data_url, image_file_to_data_url
 
 
 class UpscalerTab:
@@ -25,12 +28,17 @@ class UpscalerTab:
         self.device_manager = device_manager
         self.current_model = None
         self.current_model_name = None
+        self.current_device_name = None
         self.upsampler = None
     
     def load_model(self, model_name, device):
         """Load RealESRGAN model"""
-        if self.current_model_name == model_name and self.upsampler is not None:
-            return f"✓ Model {model_name} already loaded"
+        if (
+            self.current_model_name == model_name
+            and self.current_device_name == device
+            and self.upsampler is not None
+        ):
+            return f"✓ Model {model_name} already loaded on {device}"
         
         try:
             model_config = MODELS[model_name]
@@ -61,6 +69,7 @@ class UpscalerTab:
             )
             
             self.current_model_name = model_name
+            self.current_device_name = device
             
             return f"✓ Model {model_name} loaded successfully on {device}"
             
@@ -68,7 +77,62 @@ class UpscalerTab:
             # Reset upsampler on error
             self.upsampler = None
             self.current_model_name = None
+            self.current_device_name = None
             return f"✗ Error loading model: {str(e)}"
+
+    def _get_api_device(self):
+        """Prefer the fastest device available for remote API calls."""
+        available_devices = self.device_manager.get_available_devices()
+        for preferred_device in ("GPU (CUDA)", "MPS (Apple Silicon)", "CPU"):
+            if preferred_device in available_devices:
+                return preferred_device
+        return self.device_manager.current_device
+
+    def upscale_image_api(self, image_payload, model_name, api_token=""):
+        """Upscale a base64 image/frame through the public Gradio API."""
+        required_token = os.getenv("UPSCALE_API_TOKEN", "")
+        if required_token and not secrets.compare_digest(str(api_token or ""), required_token):
+            return {"ok": False, "error": "Invalid or missing UPSCALE_API_TOKEN"}
+
+        if model_name not in MODELS:
+            return {
+                "ok": False,
+                "error": f"Unsupported model: {model_name}",
+                "available_models": list(MODELS.keys()),
+            }
+
+        try:
+            max_input_mb = float(os.getenv("UPSCALE_API_MAX_INPUT_MB", "25"))
+            if max_input_mb <= 0:
+                raise ValueError
+        except ValueError:
+            max_input_mb = 25
+
+        try:
+            image, input_format = decode_image_data_url(
+                image_payload,
+                max_bytes=int(max_input_mb * 1024 * 1024),
+            )
+            device = self._get_api_device()
+            output_path, info = self.upscale_image(
+                image,
+                model_name,
+                device,
+                input_format=input_format,
+            )
+            if output_path is None:
+                return {"ok": False, "error": info}
+
+            return {
+                "ok": True,
+                "image": image_file_to_data_url(output_path),
+                "model": model_name,
+                "scale": MODELS[model_name]["scale"],
+                "device": device,
+                "info": info,
+            }
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
     
     def upscale_image(self, input_image, model_name, device, input_format="png"):
         """Upscale a single image"""
@@ -424,7 +488,32 @@ class UpscalerTab:
             upscale_btn.click(
                 fn=self.upscale_file,
                 inputs=[file_input, model_dropdown, device_dropdown, video_fps],
-                outputs=[image_output, video_output, info_output, image_output, video_output]
+                outputs=[image_output, video_output, info_output, image_output, video_output],
+                concurrency_limit=1,
+                concurrency_id="realesrgan_upscaler",
+            )
+
+            # Public API endpoint. Base64 keeps the REST payload self-contained,
+            # so callers do not need to expose their local input file via a URL.
+            with gr.Group(visible=False):
+                api_image_payload = gr.Textbox(label="Base64 image or data URL")
+                api_model_name = gr.Dropdown(
+                    choices=list(MODELS.keys()),
+                    value="RealESRGAN_x4plus",
+                    label="Model",
+                )
+                api_token = gr.Textbox(label="Optional API token")
+                api_result = gr.JSON(label="Upscaling API response")
+                api_button = gr.Button("API Upscale")
+
+            api_button.click(
+                fn=self.upscale_image_api,
+                inputs=[api_image_payload, api_model_name, api_token],
+                outputs=[api_result],
+                api_name="upscale_image",
+                show_progress="hidden",
+                concurrency_limit=1,
+                concurrency_id="realesrgan_upscaler",
             )
             
             # Examples Section - Expandable

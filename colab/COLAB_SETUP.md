@@ -197,6 +197,33 @@ os.environ['GRADIO_SHARE'] = 'true'
 
 You'll get a public URL like: `https://xxxxx.gradio.live`
 
+### Remote Upscaling API
+
+The same public URL exposes the named `upscale_image` endpoint. A local program
+can send an image or OpenCV frame and a RealESRGAN model name while inference
+runs on the Colab GPU.
+
+Because a Gradio share URL is public, you can protect the endpoint by setting a
+token in a cell before launching the app:
+
+```python
+%env UPSCALE_API_TOKEN=replace-with-a-long-random-value
+```
+
+From the local repository, call it with:
+
+```bash
+python remote_upscale_client.py \
+  --url https://xxxxx.gradio.live \
+  --input frame.png \
+  --output frame_upscaled.png \
+  --model RealESRGAN_x4plus \
+  --token replace-with-a-long-random-value
+```
+
+See [Remote Upscaling API](../docs/REMOTE_UPSCALING_API.md) for raw REST and
+Python/OpenCV integration examples.
+
 ### Session Persistence
 ⚠️ **Warning**: Colab sessions are temporary!
 - Download generated files before closing
