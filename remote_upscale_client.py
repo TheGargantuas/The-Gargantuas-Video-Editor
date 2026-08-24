@@ -7,7 +7,6 @@ import argparse
 import os
 from pathlib import Path
 
-from config.config import MODELS
 from utils.remote_upscale import RemoteUpscaleClient, RemoteUpscaleError
 
 
@@ -20,18 +19,17 @@ def build_parser() -> argparse.ArgumentParser:
         default=os.getenv("GRADIO_URL"),
         help="Public Gradio URL (or set GRADIO_URL)",
     )
-    parser.add_argument("--input", required=True, type=Path, help="Local input image")
-    parser.add_argument("--output", required=True, type=Path, help="Output image path")
+    parser.add_argument("--input", type=Path, help="Local input image")
+    parser.add_argument("--output", type=Path, help="Output image path")
     parser.add_argument(
         "--model",
         default="RealESRGAN_x4plus",
-        choices=list(MODELS.keys()),
         help="RealESRGAN model to use",
     )
     parser.add_argument(
-        "--token",
-        default=os.getenv("UPSCALE_API_TOKEN"),
-        help="Optional token configured on Colab (or set UPSCALE_API_TOKEN)",
+        "--list-models",
+        action="store_true",
+        help="List models exposed by the remote server and exit",
     )
     parser.add_argument(
         "--timeout",
@@ -46,10 +44,26 @@ def main() -> int:
     args = build_parser().parse_args()
     if not args.url:
         raise SystemExit("Missing --url (or GRADIO_URL)")
+    client = RemoteUpscaleClient(args.url, timeout=args.timeout)
+
+    if args.list_models:
+        try:
+            response = client.list_models()
+        except RemoteUpscaleError as exc:
+            raise SystemExit(f"Could not list models: {exc}") from exc
+        for model in response["models"]:
+            default = " (default)" if model.get("default") else ""
+            print(
+                f"{model['name']}{default} | {model['scale']}x | "
+                f"{model['description']}"
+            )
+        return 0
+
+    if args.input is None or args.output is None:
+        raise SystemExit("--input and --output are required unless --list-models is used")
     if not args.input.is_file():
         raise SystemExit(f"Input file not found: {args.input}")
 
-    client = RemoteUpscaleClient(args.url, token=args.token, timeout=args.timeout)
     try:
         output_path = client.upscale_to_file(args.input, args.model, args.output)
     except (RemoteUpscaleError, OSError, ValueError) as exc:

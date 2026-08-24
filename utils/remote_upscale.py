@@ -14,7 +14,8 @@ import requests
 from PIL import Image
 
 
-DEFAULT_API_NAME = "upscale_image"
+UPSCALE_API_NAME = "upscale_image"
+MODELS_API_NAME = "upscale_models"
 DEFAULT_TIMEOUT_SECONDS = 900
 
 
@@ -125,14 +126,12 @@ class RemoteUpscaleClient:
         self,
         base_url: str,
         *,
-        token: str | None = None,
         timeout: int = DEFAULT_TIMEOUT_SECONDS,
         session: requests.Session | None = None,
     ) -> None:
         if not base_url or not base_url.startswith(("http://", "https://")):
             raise ValueError("base_url must start with http:// or https://")
         self.base_url = base_url.rstrip("/")
-        self.token = token or ""
         self.timeout = timeout
         self.session = session or requests.Session()
         self.last_response: dict[str, Any] | None = None
@@ -146,12 +145,23 @@ class RemoteUpscaleClient:
     ) -> dict[str, Any]:
         """Send an image or frame and return the complete API response."""
         image_payload = image_to_data_url(image, input_is_bgr=input_is_bgr)
-        result = self._call_endpoint([image_payload, model, self.token])
+        result = self._call_endpoint(UPSCALE_API_NAME, [image_payload, model])
         if not result.get("ok"):
             raise RemoteUpscaleError(result.get("error", "Remote upscaling failed"))
         if not isinstance(result.get("image"), str):
             raise RemoteUpscaleError("The server response does not contain an image")
         self.last_response = result
+        return result
+
+    def list_models(self) -> dict[str, Any]:
+        """Return model names, scales, descriptions, and the default model."""
+        result = self._call_direct_endpoint(MODELS_API_NAME, [])
+        if result is None:
+            result = self._call_endpoint(MODELS_API_NAME, [])
+        if not result.get("ok"):
+            raise RemoteUpscaleError(result.get("error", "Could not list remote models"))
+        if not isinstance(result.get("models"), list):
+            raise RemoteUpscaleError("The server response does not contain a model list")
         return result
 
     def upscale_image(
@@ -185,12 +195,46 @@ class RemoteUpscaleClient:
         result_image.save(output, format=save_format)
         return output
 
-    def _call_endpoint(self, inputs: list[Any]) -> dict[str, Any]:
+    def _call_direct_endpoint(
+        self,
+        api_name: str,
+        inputs: list[Any],
+    ) -> dict[str, Any] | None:
+        """Call a synchronous Gradio endpoint, returning None when unavailable."""
+        for route_prefix in ("/gradio_api/api", "/api"):
+            try:
+                response = self.session.post(
+                    f"{self.base_url}{route_prefix}/{api_name}",
+                    json={"data": inputs},
+                    timeout=30,
+                )
+            except requests.RequestException as exc:
+                raise RemoteUpscaleError(
+                    f"Could not call the Gradio API: {exc}"
+                ) from exc
+            if response.status_code in (404, 405):
+                continue
+            try:
+                response.raise_for_status()
+            except requests.RequestException as exc:
+                raise RemoteUpscaleError(
+                    f"Could not call the Gradio API: {exc}"
+                ) from exc
+            outputs = response.json().get("data")
+            if not isinstance(outputs, list) or not outputs:
+                raise RemoteUpscaleError("Gradio returned an empty result")
+            result = outputs[0]
+            if not isinstance(result, dict):
+                raise RemoteUpscaleError("Unexpected response format from Gradio")
+            return result
+        return None
+
+    def _call_endpoint(self, api_name: str, inputs: list[Any]) -> dict[str, Any]:
         route_prefixes = ("/gradio_api/call", "/call")
         last_error: Exception | None = None
 
         for route_prefix in route_prefixes:
-            endpoint_url = f"{self.base_url}{route_prefix}/{DEFAULT_API_NAME}"
+            endpoint_url = f"{self.base_url}{route_prefix}/{api_name}"
             try:
                 response = self.session.post(
                     endpoint_url,
@@ -212,7 +256,7 @@ class RemoteUpscaleClient:
         if last_error:
             raise RemoteUpscaleError(f"Could not call the Gradio API: {last_error}") from last_error
         raise RemoteUpscaleError(
-            f"Endpoint '{DEFAULT_API_NAME}' not found. Make sure Colab is running the updated app."
+            f"Endpoint '{api_name}' not found. Make sure Colab is running the updated app."
         )
 
     def _wait_for_result(self, endpoint_url: str, event_id: str) -> dict[str, Any]:

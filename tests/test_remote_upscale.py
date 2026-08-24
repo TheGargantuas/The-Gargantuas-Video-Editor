@@ -76,6 +76,7 @@ def test_client_calls_gradio_api_and_decodes_result():
     assert result.size == (4, 4)
     assert client.last_response["device"] == "GPU (CUDA)"
     assert "/gradio_api/call/upscale_image" in session.post.call_args.args[0]
+    assert len(session.post.call_args.kwargs["json"]["data"]) == 2
     assert session.get.call_args.args[0].endswith("/event-123")
 
 
@@ -107,7 +108,7 @@ def test_client_surfaces_api_error():
     session.get.return_value = FakeResponse(
         lines=[
             "event: complete",
-            'data: [{"ok": false, "error": "Invalid token"}]',
+            'data: [{"ok": false, "error": "Remote processing failed"}]',
             "",
         ]
     )
@@ -116,9 +117,34 @@ def test_client_surfaces_api_error():
     try:
         client.upscale_image(Image.new("RGB", (1, 1)), "RealESRGAN_x4plus")
     except RemoteUpscaleError as exc:
-        assert "Invalid token" in str(exc)
+        assert "Remote processing failed" in str(exc)
     else:
         raise AssertionError("RemoteUpscaleError was not raised")
+
+
+def test_client_lists_remote_models():
+    models_result = {
+        "ok": True,
+        "default_model": "RealESRGAN_x4plus",
+        "models": [
+            {
+                "name": "RealESRGAN_x4plus",
+                "scale": 4,
+                "description": "General purpose",
+                "default": True,
+            }
+        ],
+    }
+    session = Mock()
+    session.post.return_value = FakeResponse(json_data={"data": [models_result]})
+
+    client = RemoteUpscaleClient("https://example.gradio.live", session=session)
+    result = client.list_models()
+
+    assert result == models_result
+    assert "/gradio_api/api/upscale_models" in session.post.call_args.args[0]
+    assert session.post.call_args.kwargs["json"] == {"data": []}
+    session.get.assert_not_called()
 
 
 def test_server_api_prefers_cuda_and_returns_base64(tmp_path):
@@ -138,15 +164,15 @@ def test_server_api_prefers_cuda_and_returns_base64(tmp_path):
     assert tab.upscale_image.call_args.args[2] == "GPU (CUDA)"
 
 
-def test_server_api_checks_optional_token(monkeypatch):
-    monkeypatch.setenv("UPSCALE_API_TOKEN", "secret-token")
+def test_server_api_lists_models():
     tab, _ = make_upscaler()
-    tab.upscale_image = Mock()
 
-    result = tab.upscale_image_api("unused", "RealESRGAN_x4plus", "wrong-token")
+    result = tab.get_upscale_models_api()
 
-    assert result == {"ok": False, "error": "Invalid or missing UPSCALE_API_TOKEN"}
-    tab.upscale_image.assert_not_called()
+    assert result["ok"] is True
+    assert result["default_model"] == "RealESRGAN_x4plus"
+    assert [model["name"] for model in result["models"]] == list(MODELS.keys())
+    assert result["models"][0]["scale"] == MODELS["RealESRGAN_x4plus"]["scale"]
 
 
 def test_server_api_rejects_unknown_model():

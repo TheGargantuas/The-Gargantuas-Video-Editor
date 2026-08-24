@@ -199,26 +199,23 @@ You'll get a public URL like: `https://xxxxx.gradio.live`
 
 ### Remote Upscaling API
 
-The same public URL exposes the named `upscale_image` endpoint. A local program
-can send an image or OpenCV frame and a RealESRGAN model name while inference
-runs on the Colab GPU.
+The same public URL exposes two named endpoints:
 
-Because a Gradio share URL is public, you can protect the endpoint by setting a
-token in a cell before launching the app:
-
-```python
-%env UPSCALE_API_TOKEN=replace-with-a-long-random-value
-```
+- `upscale_models` returns the model names, scales, and descriptions;
+- `upscale_image` receives an image or OpenCV frame plus the selected model.
 
 From the local repository, call it with:
 
 ```bash
 python remote_upscale_client.py \
   --url https://xxxxx.gradio.live \
+  --list-models
+
+python remote_upscale_client.py \
+  --url https://xxxxx.gradio.live \
   --input frame.png \
   --output frame_upscaled.png \
-  --model RealESRGAN_x4plus \
-  --token replace-with-a-long-random-value
+  --model RealESRGAN_x4plus
 ```
 
 See [Remote Upscaling API](../docs/REMOTE_UPSCALING_API.md) for raw REST and

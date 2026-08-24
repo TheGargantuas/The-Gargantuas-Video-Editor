@@ -69,8 +69,8 @@ python remote_upscale_client.py \
   --model RealESRGAN_x4plus
 ```
 
-See the [Remote Upscaling API guide](docs/REMOTE_UPSCALING_API.md) for Python,
-raw REST, optional token authentication, and OpenCV frame examples.
+See the [Remote Upscaling API guide](docs/REMOTE_UPSCALING_API.md) for the model
+list endpoint, exact REST calls, Python integration, and OpenCV frame examples.
 
 ---
 

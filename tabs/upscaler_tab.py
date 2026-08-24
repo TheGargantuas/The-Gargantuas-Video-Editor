@@ -13,7 +13,6 @@ from realesrgan import RealESRGANer
 from config.config import MODELS
 import ffmpeg
 import os
-import secrets
 import time
 import shutil
 
@@ -88,12 +87,28 @@ class UpscalerTab:
                 return preferred_device
         return self.device_manager.current_device
 
-    def upscale_image_api(self, image_payload, model_name, api_token=""):
-        """Upscale a base64 image/frame through the public Gradio API."""
-        required_token = os.getenv("UPSCALE_API_TOKEN", "")
-        if required_token and not secrets.compare_digest(str(api_token or ""), required_token):
-            return {"ok": False, "error": "Invalid or missing UPSCALE_API_TOKEN"}
+    def get_upscale_models_api(self):
+        """Return the models exposed by the remote upscaling API."""
+        default_model = next(
+            (name for name, config in MODELS.items() if config.get("default")),
+            next(iter(MODELS)),
+        )
+        return {
+            "ok": True,
+            "default_model": default_model,
+            "models": [
+                {
+                    "name": name,
+                    "scale": config["scale"],
+                    "description": config["description"],
+                    "default": name == default_model,
+                }
+                for name, config in MODELS.items()
+            ],
+        }
 
+    def upscale_image_api(self, image_payload, model_name):
+        """Upscale a base64 image/frame through the public Gradio API."""
         if model_name not in MODELS:
             return {
                 "ok": False,
@@ -502,18 +517,28 @@ class UpscalerTab:
                     value="RealESRGAN_x4plus",
                     label="Model",
                 )
-                api_token = gr.Textbox(label="Optional API token")
                 api_result = gr.JSON(label="Upscaling API response")
                 api_button = gr.Button("API Upscale")
+                api_models_result = gr.JSON(label="Available upscaling models")
+                api_models_button = gr.Button("API Models")
 
             api_button.click(
                 fn=self.upscale_image_api,
-                inputs=[api_image_payload, api_model_name, api_token],
+                inputs=[api_image_payload, api_model_name],
                 outputs=[api_result],
                 api_name="upscale_image",
                 show_progress="hidden",
                 concurrency_limit=1,
                 concurrency_id="realesrgan_upscaler",
+            )
+
+            api_models_button.click(
+                fn=self.get_upscale_models_api,
+                inputs=[],
+                outputs=[api_models_result],
+                api_name="upscale_models",
+                show_progress="hidden",
+                queue=False,
             )
             
             # Examples Section - Expandable
