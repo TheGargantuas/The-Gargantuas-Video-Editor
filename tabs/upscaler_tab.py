@@ -24,6 +24,9 @@ from utils.remote_upscale import (
     video_file_to_data_url,
 )
 
+DEFAULT_VIDEO_CHUNK_FRAMES = max(1, int(os.getenv("UPSCALE_API_DEFAULT_CHUNK_FRAMES", "100")))
+MAX_VIDEO_CHUNK_FRAMES = max(DEFAULT_VIDEO_CHUNK_FRAMES, int(os.getenv("UPSCALE_API_MAX_CHUNK_FRAMES", "5000")))
+
 
 class UpscalerTab:
     """Handles image and video upscaling functionality"""
@@ -101,11 +104,14 @@ class UpscalerTab:
         )
         return {
             "ok": True,
-            "api_version": 2,
+            "api_version": 3,
             "capabilities": {
                 "image_upscale": True,
                 "video_chunks": True,
-                "chunk_frames": 100,
+                "chunk_frames": DEFAULT_VIDEO_CHUNK_FRAMES,
+                "max_chunk_frames": MAX_VIDEO_CHUNK_FRAMES,
+                "preserve_source_fps": True,
+                "optional_output_fps": True,
             },
             "default_model": default_model,
             "models": [
@@ -199,7 +205,11 @@ class UpscalerTab:
         source_fps = float(capture.get(cv2.CAP_PROP_FPS) or 0)
         source_width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
         source_height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
-        fps = float(fps_override or source_fps or 30)
+        requested_fps = float(fps_override or 0)
+        if not np.isfinite(requested_fps) or requested_fps < 0:
+            capture.release()
+            raise ValueError("Video FPS must be 0 (original) or a positive finite value")
+        fps = requested_fps or source_fps or 30
         reported_total = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
         scale = MODELS[model_name]["scale"]
         process = None
@@ -264,14 +274,17 @@ class UpscalerTab:
         finally:
             capture.release()
 
-    def upscale_video_chunk_api(self, video_payload, model_name, expected_frames):
+    def upscale_video_chunk_api(self, video_payload, model_name, expected_frames, output_fps=0):
         """Upscale one bounded MP4 chunk for MLSM Studio's parallel scheduler."""
         if model_name not in MODELS:
             return {"ok": False, "error": f"Unsupported model: {model_name}", "available_models": list(MODELS.keys())}
         try:
             expected = int(expected_frames)
-            if expected < 1 or expected > 100:
-                raise ValueError("A video chunk must contain from 1 to 100 frames")
+            if expected < 1 or expected > MAX_VIDEO_CHUNK_FRAMES:
+                raise ValueError(f"A video chunk must contain from 1 to {MAX_VIDEO_CHUNK_FRAMES} frames")
+            requested_fps = float(output_fps or 0)
+            if not np.isfinite(requested_fps) or requested_fps < 0:
+                raise ValueError("Output FPS must be 0 (original) or a positive finite value")
             max_input_mb = max(1, float(os.getenv("UPSCALE_API_MAX_VIDEO_INPUT_MB", "256")))
             max_output_mb = max(1, float(os.getenv("UPSCALE_API_MAX_VIDEO_OUTPUT_MB", "1024")))
             source_bytes = decode_video_data_url(video_payload, max_bytes=int(max_input_mb * 1024 * 1024))
@@ -288,12 +301,13 @@ class UpscalerTab:
                 source_path,
                 output_path,
                 model_name,
+                fps_override=requested_fps,
                 expected_frames=expected,
                 crf=12,
             )
             return {
                 "ok": True,
-                "api_version": 2,
+                "api_version": 3,
                 "video": video_file_to_data_url(output_path, max_bytes=int(max_output_mb * 1024 * 1024)),
                 "model": model_name,
                 "scale": MODELS[model_name]["scale"],
@@ -566,8 +580,7 @@ class UpscalerTab:
                             label="Video FPS (0 = original)",
                             value=0,
                             minimum=0,
-                            maximum=120,
-                            info="Only for videos. Output images keep original format."
+                            info="Only for videos. Leave 0 to preserve the original frame rate and every decoded frame."
                         )
                     
                     upscale_btn = gr.Button("🚀 Upscale", variant="primary", size="lg")
@@ -612,7 +625,8 @@ class UpscalerTab:
                 api_models_button = gr.Button("API Models")
                 api_video_payload = gr.Textbox(label="Base64 MP4 chunk")
                 api_video_model = gr.Dropdown(choices=list(MODELS.keys()), value="RealESRGAN_x4plus", label="Chunk model")
-                api_video_frames = gr.Number(value=100, minimum=1, maximum=100, precision=0, label="Expected frames")
+                api_video_frames = gr.Number(value=DEFAULT_VIDEO_CHUNK_FRAMES, minimum=1, maximum=MAX_VIDEO_CHUNK_FRAMES, precision=0, label="Expected frames")
+                api_video_fps = gr.Number(value=0, minimum=0, label="Output FPS (0 = chunk original)")
                 api_video_result = gr.JSON(label="Video chunk API response")
                 api_video_button = gr.Button("API Upscale Video Chunk")
 
@@ -637,7 +651,7 @@ class UpscalerTab:
 
             api_video_button.click(
                 fn=self.upscale_video_chunk_api,
-                inputs=[api_video_payload, api_video_model, api_video_frames],
+                inputs=[api_video_payload, api_video_model, api_video_frames, api_video_fps],
                 outputs=[api_video_result],
                 api_name="upscale_video_chunk",
                 show_progress="hidden",

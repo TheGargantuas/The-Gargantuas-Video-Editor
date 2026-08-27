@@ -14,7 +14,7 @@ import requests
 from PIL import Image
 
 from config.config import MODELS
-from tabs.upscaler_tab import UpscalerTab
+from tabs.upscaler_tab import MAX_VIDEO_CHUNK_FRAMES, UpscalerTab
 from utils.remote_upscale import (
     RemoteUpscaleClient,
     RemoteUpscaleError,
@@ -179,11 +179,14 @@ def test_server_api_lists_models():
     assert result["default_model"] == "RealESRGAN_x4plus"
     assert [model["name"] for model in result["models"]] == list(MODELS.keys())
     assert result["models"][0]["scale"] == MODELS["RealESRGAN_x4plus"]["scale"]
-    assert result["api_version"] == 2
+    assert result["api_version"] == 3
     assert result["capabilities"] == {
         "image_upscale": True,
         "video_chunks": True,
         "chunk_frames": 100,
+        "max_chunk_frames": MAX_VIDEO_CHUNK_FRAMES,
+        "preserve_source_fps": True,
+        "optional_output_fps": True,
     }
 
 
@@ -214,6 +217,7 @@ def test_server_video_chunk_api_returns_exact_metadata_and_cleans_workspace(tmp_
 
     def stream(_source, output, _model, **options):
         assert options["expected_frames"] == 100
+        assert options["fps_override"] == 0
         assert options["crf"] == 12
         Path(output).write_bytes(b"\x00\x00\x00\x18ftypisomoutput")
         return {"frame_count": 100, "fps": 30.0, "width": 1280, "height": 720, "elapsed_seconds": 2.5}
@@ -232,14 +236,38 @@ def test_server_video_chunk_api_returns_exact_metadata_and_cleans_workspace(tmp_
     assert not chunks_root.exists() or list(chunks_root.iterdir()) == []
 
 
+def test_server_video_chunk_api_accepts_large_batches_and_explicit_fps(tmp_path):
+    tab, _ = make_upscaler()
+    tab.temp_manager.create_temp_subdir.return_value = tmp_path / "api_video_chunks"
+    tab.load_model = Mock(return_value="loaded")
+    tab.upsampler = Mock()
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"\x00\x00\x00\x18ftypisominput")
+
+    def stream(_source, output, _model, **options):
+        assert options["expected_frames"] == 300
+        assert options["fps_override"] == 59.94
+        Path(output).write_bytes(b"\x00\x00\x00\x18ftypisomoutput")
+        return {"frame_count": 300, "fps": 59.94, "width": 1280, "height": 720, "elapsed_seconds": 2.5}
+
+    tab._stream_upscaled_video = Mock(side_effect=stream)
+    result = tab.upscale_video_chunk_api(
+        video_file_to_data_url(source, max_bytes=1024), "RealESRGAN_x2plus", 300, 59.94
+    )
+
+    assert result["ok"] is True
+    assert result["frame_count"] == 300
+    assert result["fps"] == 59.94
+
+
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
 def test_stream_encoder_writes_frames_during_upscaling_without_png_sequence(tmp_path):
     source = tmp_path / "source.mp4"
     output = tmp_path / "output.mp4"
     subprocess.run([
         shutil.which("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y",
-        "-f", "lavfi", "-i", "testsrc2=size=32x24:rate=6:duration=1",
-        "-frames:v", "6", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(source),
+        "-f", "lavfi", "-i", "testsrc2=size=32x24:rate=30:duration=1",
+        "-frames:v", "30", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(source),
     ], check=True)
     tab, _ = make_upscaler()
     tab.upsampler = Mock()
@@ -249,10 +277,11 @@ def test_stream_encoder_writes_frames_during_upscaling_without_png_sequence(tmp_
     )
 
     metadata = tab._stream_upscaled_video(
-        source, output, "RealESRGAN_x2plus", expected_frames=6
+        source, output, "RealESRGAN_x2plus", expected_frames=30
     )
 
-    assert metadata["frame_count"] == 6
+    assert metadata["frame_count"] == 30
+    assert metadata["fps"] == pytest.approx(30)
     assert (metadata["width"], metadata["height"]) == (64, 48)
     assert output.exists() and output.stat().st_size > 0
     assert not list(tmp_path.glob("*.png"))

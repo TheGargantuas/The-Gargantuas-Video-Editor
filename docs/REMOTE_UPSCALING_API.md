@@ -3,7 +3,7 @@
 Questa API permette a un'altra applicazione di usare la GPU di Google Colab per
 fare upscaling di un'immagine oppure di un segmento video. Per i video non è
 più necessario inviare un frame per richiesta: MLSM Studio crea segmenti da
-massimo 100 frame e li distribuisce in parallelo fra più runtime Colab.
+un numero configurabile di frame (100 per default, fino a 5000) e li distribuisce in parallelo fra più runtime Colab.
 
 Non c'è nessun token da creare o configurare. Per chiamare l'API serve soltanto
 l'URL pubblico generato da Gradio, per esempio:
@@ -18,7 +18,7 @@ https://abc123.gradio.live
 |---|---|---|
 | `upscale_models` | Restituisce tutti i modelli disponibili | Nessuno |
 | `upscale_image` | Esegue l'upscaling | Immagine base64 e nome modello |
-| `upscale_video_chunk` | Upscala ed encode un segmento MP4 | MP4 base64, modello, frame attesi (1–100) |
+| `upscale_video_chunk` | Upscala ed encode un segmento MP4 | MP4 base64, modello, frame attesi (1–5000), FPS (0 = originali) |
 
 Il flusso da integrare è questo:
 
@@ -28,7 +28,7 @@ Il flusso da integrare è questo:
 3. L'utente sceglie un modello
 4. Chiama upscale_image con immagine + nome scelto
 5. Per una foto chiama `upscale_image`; per un video distribuisci segmenti da
-   100 frame con `upscale_video_chunk`
+   il numero configurato di frame con `upscale_video_chunk`
 6. Salva ogni segmento restituito prima di assegnare altro lavoro
 ```
 
@@ -218,15 +218,16 @@ decodifica il resto da base64 e ottieni i bytes dell'immagine.
 Il catalogo espone il contratto supportato:
 
 ```json
-{"api_version":2,"capabilities":{"image_upscale":true,"video_chunks":true,"chunk_frames":100}}
+{"api_version":3,"capabilities":{"image_upscale":true,"video_chunks":true,"chunk_frames":100,"max_chunk_frames":5000,"preserve_source_fps":true,"optional_output_fps":true}}
 ```
 
-`upscale_video_chunk` accetta esattamente tre valori ordinati:
+`upscale_video_chunk` accetta quattro valori ordinati:
 
 ```text
 data[0] = MP4 come data:video/mp4;base64,...
 data[1] = nome modello
-data[2] = numero esatto di frame, da 1 a 100
+data[2] = numero esatto di frame, da 1 a max_chunk_frames
+data[3] = FPS di uscita; 0 mantiene gli FPS del segmento
 ```
 
 Il risultato contiene un MP4 H.264 senza audio e i metadati verificabili:
@@ -234,7 +235,7 @@ Il risultato contiene un MP4 H.264 senza audio e i metadati verificabili:
 ```json
 {
   "ok": true,
-  "api_version": 2,
+  "api_version": 3,
   "video": "data:video/mp4;base64,...",
   "model": "RealESRGAN_x4plus",
   "scale": 4,
@@ -246,11 +247,15 @@ Il risultato contiene un MP4 H.264 senza audio e i metadati verificabili:
 }
 ```
 
-Il server rifiuta segmenti con più di 100 frame o con un conteggio diverso da
+Il server rifiuta segmenti oltre `max_chunk_frames` o con un conteggio diverso da
 quello dichiarato. I file temporanei della richiesta vengono eliminati dopo
 aver costruito la risposta. L'audio non attraversa Colab: resta nel file
 originale e viene ripristinato una sola volta dal coordinatore locale dopo aver
 verificato e ordinato tutti i segmenti.
+
+Sia l'interfaccia standalone sia l'API mantengono per default tutti i frame e
+il frame rate originale. Non esiste alcuna conversione automatica a 25 FPS:
+la cadenza cambia soltanto quando l'utente passa esplicitamente un valore FPS.
 
 ## Codice REST pronto da copiare
 
