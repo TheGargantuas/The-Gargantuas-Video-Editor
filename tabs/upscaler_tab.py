@@ -5,7 +5,6 @@ AI-powered image and video upscaling using RealESRGAN models
 import cv2
 import numpy as np
 from PIL import Image
-import torch
 from pathlib import Path
 import gradio as gr
 from basicsr.archs.rrdbnet_arch import RRDBNet
@@ -13,10 +12,17 @@ from realesrgan import RealESRGANer
 from config.config import MODELS
 import ffmpeg
 import os
+import subprocess
 import time
 import shutil
+import uuid
 
-from utils.remote_upscale import decode_image_data_url, image_file_to_data_url
+from utils.remote_upscale import (
+    decode_image_data_url,
+    decode_video_data_url,
+    image_file_to_data_url,
+    video_file_to_data_url,
+)
 
 
 class UpscalerTab:
@@ -95,6 +101,12 @@ class UpscalerTab:
         )
         return {
             "ok": True,
+            "api_version": 2,
+            "capabilities": {
+                "image_upscale": True,
+                "video_chunks": True,
+                "chunk_frames": 100,
+            },
             "default_model": default_model,
             "models": [
                 {
@@ -148,6 +160,151 @@ class UpscalerTab:
             }
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
+
+    @staticmethod
+    def _start_raw_video_encoder(output_path, width, height, fps, *, crf=18):
+        """Start a fast H.264 encoder fed with OpenCV BGR frames on stdin."""
+        ffmpeg_executable = shutil.which("ffmpeg")
+        if not ffmpeg_executable:
+            raise RuntimeError("ffmpeg is required to encode an upscaled video")
+        command = [
+            ffmpeg_executable, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+            "-f", "rawvideo", "-pix_fmt", "bgr24", "-s:v", f"{width}x{height}",
+            "-r", f"{fps:.8f}", "-i", "pipe:0", "-an", "-c:v", "libx264",
+            "-preset", "veryfast", "-crf", str(crf), "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart", str(output_path),
+        ]
+        return subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+
+    def _stream_upscaled_video(
+        self,
+        input_path,
+        output_path,
+        model_name,
+        *,
+        fps_override=None,
+        expected_frames=None,
+        crf=18,
+        on_frame=None,
+    ):
+        """Upscale and encode concurrently, without an intermediate PNG sequence."""
+        capture = cv2.VideoCapture(str(input_path))
+        if not capture.isOpened():
+            raise RuntimeError("Could not open video file")
+        source_fps = float(capture.get(cv2.CAP_PROP_FPS) or 0)
+        source_width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+        source_height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+        fps = float(fps_override or source_fps or 30)
+        reported_total = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        scale = MODELS[model_name]["scale"]
+        process = None
+        frame_count = 0
+        width = height = 0
+        started_at = time.time()
+        try:
+            while True:
+                ok, frame = capture.read()
+                if not ok:
+                    break
+                if expected_frames is not None and frame_count >= expected_frames:
+                    raise ValueError(f"The chunk contains more than {expected_frames} frames")
+                frame_started_at = time.time()
+                output_frame, _ = self.upsampler.enhance(frame, outscale=scale)
+                output_frame = np.ascontiguousarray(output_frame, dtype=np.uint8)
+                if process is None:
+                    height, width = output_frame.shape[:2]
+                    process = self._start_raw_video_encoder(output_path, width, height, fps, crf=crf)
+                if process.stdin is None:
+                    raise RuntimeError("ffmpeg input pipe is unavailable")
+                process.stdin.write(output_frame.tobytes())
+                frame_count += 1
+                if on_frame:
+                    on_frame(
+                        frame_count,
+                        reported_total or expected_frames or frame_count,
+                        time.time() - frame_started_at,
+                        time.time() - started_at,
+                    )
+            if frame_count == 0:
+                raise ValueError("The input video contains no decodable frames")
+            if expected_frames is not None and frame_count != expected_frames:
+                raise ValueError(f"Frame count mismatch: expected {expected_frames}, decoded {frame_count}")
+            assert process is not None
+            assert process.stdin is not None
+            process.stdin.close()
+            stderr = process.stderr.read().decode("utf-8", "replace") if process.stderr else ""
+            return_code = process.wait()
+            if return_code:
+                raise RuntimeError(f"ffmpeg encoding failed: {stderr.strip() or return_code}")
+            return {
+                "frame_count": frame_count,
+                "fps": fps,
+                "width": width,
+                "height": height,
+                "source_width": source_width,
+                "source_height": source_height,
+                "elapsed_seconds": time.time() - started_at,
+            }
+        except Exception:
+            if process is not None and process.poll() is None:
+                if process.stdin:
+                    try:
+                        process.stdin.close()
+                    except OSError:
+                        pass
+                process.kill()
+                process.wait()
+            Path(output_path).unlink(missing_ok=True)
+            raise
+        finally:
+            capture.release()
+
+    def upscale_video_chunk_api(self, video_payload, model_name, expected_frames):
+        """Upscale one bounded MP4 chunk for MLSM Studio's parallel scheduler."""
+        if model_name not in MODELS:
+            return {"ok": False, "error": f"Unsupported model: {model_name}", "available_models": list(MODELS.keys())}
+        try:
+            expected = int(expected_frames)
+            if expected < 1 or expected > 100:
+                raise ValueError("A video chunk must contain from 1 to 100 frames")
+            max_input_mb = max(1, float(os.getenv("UPSCALE_API_MAX_VIDEO_INPUT_MB", "256")))
+            max_output_mb = max(1, float(os.getenv("UPSCALE_API_MAX_VIDEO_OUTPUT_MB", "1024")))
+            source_bytes = decode_video_data_url(video_payload, max_bytes=int(max_input_mb * 1024 * 1024))
+            job_dir = self.temp_manager.create_temp_subdir("api_video_chunks") / uuid.uuid4().hex
+            job_dir.mkdir(parents=True, exist_ok=False)
+            source_path = job_dir / "input.mp4"
+            output_path = job_dir / "upscaled.mp4"
+            source_path.write_bytes(source_bytes)
+            device = self._get_api_device()
+            load_message = self.load_model(model_name, device)
+            if self.upsampler is None:
+                raise RuntimeError(load_message)
+            metadata = self._stream_upscaled_video(
+                source_path,
+                output_path,
+                model_name,
+                expected_frames=expected,
+                crf=12,
+            )
+            return {
+                "ok": True,
+                "api_version": 2,
+                "video": video_file_to_data_url(output_path, max_bytes=int(max_output_mb * 1024 * 1024)),
+                "model": model_name,
+                "scale": MODELS[model_name]["scale"],
+                "device": device,
+                **metadata,
+            }
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+        finally:
+            if "job_dir" in locals():
+                shutil.rmtree(job_dir, ignore_errors=True)
     
     def upscale_image(self, input_image, model_name, device, input_format="png"):
         """Upscale a single image"""
@@ -245,94 +402,34 @@ class UpscalerTab:
                 print(f"Warning: Could not extract audio: {e}")
                 has_audio = False
             
-            # Open video
-            progress(0.1, desc="Opening video...")
-            cap = cv2.VideoCapture(input_video)
-            
-            if not cap.isOpened():
-                return None, "✗ Could not open video file"
-            
-            # Get video properties
-            original_fps = cap.get(cv2.CAP_PROP_FPS)
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            
-            # Use original fps if None or 0
-            if fps is None or fps == 0:
-                fps = original_fps
-            
-            # Calculate output dimensions
-            scale = MODELS[model_name]['scale']
-            output_width = width * scale
-            output_height = height * scale
-            
-            progress(0.15, desc=f"Processing {total_frames} frames...")
-            
-            # Create frames directory
-            frames_dir = self.temp_manager.get_frames_dir()
-            output_frames_dir = self.temp_manager.create_temp_subdir("output_frames")
-            
-            # Extract and upscale frames with timing
-            frame_count = 0
-            total_processing_time = 0
-            start_time = time.time()
-            
-            while True:
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                
-                frame_start = time.time()
-                
-                # Upscale frame
-                output_frame, _ = self.upsampler.enhance(frame, outscale=scale)
-                
-                frame_end = time.time()
-                frame_time = frame_end - frame_start
-                total_processing_time += frame_time
-                
-                # Save frame
-                output_frame_path = output_frames_dir / f"frame_{frame_count:06d}.png"
-                cv2.imwrite(str(output_frame_path), output_frame)
-                
-                frame_count += 1
-                avg_time_per_frame = total_processing_time / frame_count
-                remaining_frames = total_frames - frame_count
-                eta_seconds = remaining_frames * avg_time_per_frame
-                
-                progress(0.15 + (0.7 * frame_count / total_frames), 
-                        desc=f"Frame {frame_count}/{total_frames} | {avg_time_per_frame:.2f}s/frame | ETA: {eta_seconds:.1f}s")
-                
-                # Print to terminal
-                print(f"Frame {frame_count}/{total_frames} processed in {frame_time:.2f}s (avg: {avg_time_per_frame:.2f}s/frame)")
-            
-            cap.release()
-            
-            total_time = time.time() - start_time
-            print(f"\n✓ All frames processed in {total_time:.2f}s")
-            print(f"  Average: {total_processing_time/frame_count:.2f}s/frame")
-            
-            progress(0.85, desc="Encoding video...")
-            
-            # Reconstruct video (always same filename to avoid duplicates)
+            progress(0.1, desc="Upscaling and encoding video...")
             temp_video_path = self.temp_manager.get_temp_file_path("upscaled_video_no_audio.mp4")
             output_video_path = self.temp_manager.get_temp_file_path("upscaled_video.mp4")
-            
-            # Remove old files if exist
             if temp_video_path.exists():
                 temp_video_path.unlink()
             if output_video_path.exists():
                 output_video_path.unlink()
-            
-            # Encode video without audio first
-            (
-                ffmpeg
-                .input(str(output_frames_dir / "frame_%06d.png"), framerate=fps)
-                .output(str(temp_video_path), vcodec='libx264', pix_fmt='yuv420p', crf=18)
-                .overwrite_output()
-                .run(quiet=True, capture_stdout=True, capture_stderr=True)
+
+            def update_progress(done, total, frame_time, elapsed):
+                average = elapsed / done
+                eta = max(0, total - done) * average
+                progress(0.1 + (0.82 * done / max(1, total)), desc=f"Frame {done}/{total} · {frame_time:.2f}s · ETA {eta:.1f}s")
+
+            metadata = self._stream_upscaled_video(
+                input_video,
+                temp_video_path,
+                model_name,
+                fps_override=fps,
+                on_frame=update_progress,
             )
+            frame_count = metadata["frame_count"]
+            fps = metadata["fps"]
+            output_width = metadata["width"]
+            output_height = metadata["height"]
+            width = metadata["source_width"]
+            height = metadata["source_height"]
+            total_time = metadata["elapsed_seconds"]
+            progress(0.93, desc="Finalizing audio...")
             
             # Combine with audio if available
             if has_audio and audio_path and audio_path.exists():
@@ -357,16 +454,8 @@ class UpscalerTab:
                 # No audio, just rename temp video
                 temp_video_path.rename(output_video_path)
             
-            # Clean up output frames after encoding
-            try:
-                shutil.rmtree(output_frames_dir)
-                print(f"✓ Cleaned up output frames directory")
-            except Exception as e:
-                print(f"Warning: Could not clean up output frames: {e}")
-            
             progress(1.0, desc="Done!")
-            
-            avg_time_per_frame = total_processing_time / frame_count
+            avg_time_per_frame = total_time / frame_count
             
             info = f"✓ Video upscaled successfully\n{load_msg}\n"
             info += f"Frames processed: {frame_count}\n"
@@ -374,7 +463,7 @@ class UpscalerTab:
             info += f"Upscaled size: {output_width}x{output_height}\n"
             info += f"FPS: {fps}\n"
             info += f"Audio: {'✓ Preserved' if has_audio else '✗ No audio track'}\n"
-            info += f"\n⏱️ Performance:\n"
+            info += "\n⏱️ Performance:\n"
             info += f"  Total time: {total_time:.2f}s\n"
             info += f"  Average: {avg_time_per_frame:.2f}s/frame\n"
             info += f"  Speed: {frame_count/total_time:.2f} fps"
@@ -521,6 +610,11 @@ class UpscalerTab:
                 api_button = gr.Button("API Upscale")
                 api_models_result = gr.JSON(label="Available upscaling models")
                 api_models_button = gr.Button("API Models")
+                api_video_payload = gr.Textbox(label="Base64 MP4 chunk")
+                api_video_model = gr.Dropdown(choices=list(MODELS.keys()), value="RealESRGAN_x4plus", label="Chunk model")
+                api_video_frames = gr.Number(value=100, minimum=1, maximum=100, precision=0, label="Expected frames")
+                api_video_result = gr.JSON(label="Video chunk API response")
+                api_video_button = gr.Button("API Upscale Video Chunk")
 
             api_button.click(
                 fn=self.upscale_image_api,
@@ -539,6 +633,16 @@ class UpscalerTab:
                 api_name="upscale_models",
                 show_progress="hidden",
                 queue=False,
+            )
+
+            api_video_button.click(
+                fn=self.upscale_video_chunk_api,
+                inputs=[api_video_payload, api_video_model, api_video_frames],
+                outputs=[api_video_result],
+                api_name="upscale_video_chunk",
+                show_progress="hidden",
+                concurrency_limit=1,
+                concurrency_id="realesrgan_upscaler",
             )
             
             # Examples Section - Expandable
@@ -664,7 +768,7 @@ class UpscalerTab:
                 with gr.Row():
                     with gr.Column(scale=1):
                         gr.Markdown("### 🎬 Original (Base)")
-                        base_video = gr.Video(
+                        gr.Video(
                             value="example/example_video/base.mp4",
                             label="",
                             autoplay=False,

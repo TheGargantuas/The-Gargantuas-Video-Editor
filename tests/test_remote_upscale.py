@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
+from pathlib import Path
 from unittest.mock import Mock
 
 import numpy as np
+import pytest
 import requests
 from PIL import Image
 
@@ -15,7 +19,9 @@ from utils.remote_upscale import (
     RemoteUpscaleClient,
     RemoteUpscaleError,
     data_url_to_image,
+    decode_video_data_url,
     image_to_data_url,
+    video_file_to_data_url,
 )
 
 
@@ -173,6 +179,83 @@ def test_server_api_lists_models():
     assert result["default_model"] == "RealESRGAN_x4plus"
     assert [model["name"] for model in result["models"]] == list(MODELS.keys())
     assert result["models"][0]["scale"] == MODELS["RealESRGAN_x4plus"]["scale"]
+    assert result["api_version"] == 2
+    assert result["capabilities"] == {
+        "image_upscale": True,
+        "video_chunks": True,
+        "chunk_frames": 100,
+    }
+
+
+def test_video_data_url_round_trip_and_signature_validation(tmp_path):
+    video = tmp_path / "chunk.mp4"
+    payload = b"\x00\x00\x00\x18ftypisompayload"
+    video.write_bytes(payload)
+
+    encoded = video_file_to_data_url(video, max_bytes=1024)
+
+    assert decode_video_data_url(encoded, max_bytes=1024) == payload
+    try:
+        decode_video_data_url("data:video/mp4;base64,AAAA", max_bytes=1024)
+    except ValueError as exc:
+        assert "MP4" in str(exc)
+    else:
+        raise AssertionError("Malformed MP4 was accepted")
+
+
+def test_server_video_chunk_api_returns_exact_metadata_and_cleans_workspace(tmp_path):
+    tab, _ = make_upscaler()
+    chunks_root = tmp_path / "api_video_chunks"
+    tab.temp_manager.create_temp_subdir.return_value = chunks_root
+    tab.load_model = Mock(return_value="loaded")
+    tab.upsampler = Mock()
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"\x00\x00\x00\x18ftypisominput")
+
+    def stream(_source, output, _model, **options):
+        assert options["expected_frames"] == 100
+        assert options["crf"] == 12
+        Path(output).write_bytes(b"\x00\x00\x00\x18ftypisomoutput")
+        return {"frame_count": 100, "fps": 30.0, "width": 1280, "height": 720, "elapsed_seconds": 2.5}
+
+    tab._stream_upscaled_video = Mock(side_effect=stream)
+
+    result = tab.upscale_video_chunk_api(
+        video_file_to_data_url(source, max_bytes=1024),
+        "RealESRGAN_x2plus",
+        100,
+    )
+
+    assert result["ok"] is True
+    assert result["frame_count"] == 100
+    assert result["video"].startswith("data:video/mp4;base64,")
+    assert not chunks_root.exists() or list(chunks_root.iterdir()) == []
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+def test_stream_encoder_writes_frames_during_upscaling_without_png_sequence(tmp_path):
+    source = tmp_path / "source.mp4"
+    output = tmp_path / "output.mp4"
+    subprocess.run([
+        shutil.which("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y",
+        "-f", "lavfi", "-i", "testsrc2=size=32x24:rate=6:duration=1",
+        "-frames:v", "6", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(source),
+    ], check=True)
+    tab, _ = make_upscaler()
+    tab.upsampler = Mock()
+    tab.upsampler.enhance.side_effect = lambda frame, outscale: (
+        np.repeat(np.repeat(frame, int(outscale), axis=0), int(outscale), axis=1),
+        None,
+    )
+
+    metadata = tab._stream_upscaled_video(
+        source, output, "RealESRGAN_x2plus", expected_frames=6
+    )
+
+    assert metadata["frame_count"] == 6
+    assert (metadata["width"], metadata["height"]) == (64, 48)
+    assert output.exists() and output.stat().st_size > 0
+    assert not list(tmp_path.glob("*.png"))
 
 
 def test_server_api_rejects_unknown_model():

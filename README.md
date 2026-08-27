@@ -57,9 +57,10 @@ The Gradio interface will open in a new browser tab. You're ready to use all the
 
 ### Use the Colab GPU from a local application
 
-The public Gradio URL also exposes a named `upscale_image` API. You can send a
-local image or OpenCV frame, select a RealESRGAN model, and receive the upscaled
-result while inference runs on the Colab GPU:
+The public Gradio URL exposes `upscale_image` for photos and
+`upscale_video_chunk` for bounded MP4 segments. MLSM Studio uses the second API
+to distribute 100-frame chunks across multiple Colab GPUs in parallel, while
+keeping every completed segment as a resumable local checkpoint:
 
 ```bash
 python remote_upscale_client.py \
@@ -69,8 +70,9 @@ python remote_upscale_client.py \
   --model RealESRGAN_x4plus
 ```
 
-See the [Remote Upscaling API guide](docs/REMOTE_UPSCALING_API.md) for the model
-list endpoint, exact REST calls, Python integration, and OpenCV frame examples.
+See the [Remote Upscaling API guide](docs/REMOTE_UPSCALING_API.md) for endpoint
+capabilities, exact REST calls, segment limits, Python integration, and the
+rules used to verify frame counts before reconstruction.
 
 ---
 

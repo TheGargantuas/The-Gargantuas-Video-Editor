@@ -16,6 +16,7 @@ from PIL import Image
 
 UPSCALE_API_NAME = "upscale_image"
 MODELS_API_NAME = "upscale_models"
+VIDEO_CHUNK_API_NAME = "upscale_video_chunk"
 DEFAULT_TIMEOUT_SECONDS = 900
 
 
@@ -117,6 +118,42 @@ def data_url_to_image(payload: str) -> Image.Image:
     """Decode a response data URL without applying the server upload limit."""
     image, _ = decode_image_data_url(payload, max_bytes=1024 * 1024 * 1024)
     return image
+
+
+def decode_video_data_url(payload: str, *, max_bytes: int) -> bytes:
+    """Decode a base64 MP4 payload and reject malformed or oversized input."""
+    if not isinstance(payload, str) or not payload.strip():
+        raise ValueError("The video payload is empty")
+    encoded = payload.strip()
+    if encoded.startswith("data:"):
+        try:
+            header, encoded = encoded.split(",", 1)
+        except ValueError as exc:
+            raise ValueError("Invalid video data URL") from exc
+        if ";base64" not in header.lower() or not header.lower().startswith("data:video/"):
+            raise ValueError("The video data URL must contain a base64 video")
+    try:
+        video_bytes = base64.b64decode(encoded, validate=True)
+    except Exception as exc:
+        raise ValueError("The video payload is not valid base64") from exc
+    if not video_bytes or len(video_bytes) > max_bytes:
+        limit = max_bytes / (1024 * 1024)
+        raise ValueError(f"The input video is empty or exceeds the {limit:g} MB limit")
+    if len(video_bytes) < 12 or video_bytes[4:8] != b"ftyp":
+        raise ValueError("The decoded payload is not an MP4 video")
+    return video_bytes
+
+
+def video_file_to_data_url(video_path: str | Path, *, max_bytes: int) -> str:
+    """Encode a generated MP4 as a bounded video data URL."""
+    path = Path(video_path)
+    video_bytes = path.read_bytes()
+    if not video_bytes or len(video_bytes) > max_bytes:
+        limit = max_bytes / (1024 * 1024)
+        raise ValueError(f"The output video is empty or exceeds the {limit:g} MB limit")
+    if len(video_bytes) < 12 or video_bytes[4:8] != b"ftyp":
+        raise ValueError("The generated output is not an MP4 video")
+    return "data:video/mp4;base64," + base64.b64encode(video_bytes).decode("ascii")
 
 
 class RemoteUpscaleClient:

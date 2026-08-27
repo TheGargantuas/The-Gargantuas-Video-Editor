@@ -1,7 +1,9 @@
 # API REST per Upscaling remoto su Google Colab
 
 Questa API permette a un'altra applicazione di usare la GPU di Google Colab per
-fare upscaling di un'immagine o di un frame.
+fare upscaling di un'immagine oppure di un segmento video. Per i video non è
+più necessario inviare un frame per richiesta: MLSM Studio crea segmenti da
+massimo 100 frame e li distribuisce in parallelo fra più runtime Colab.
 
 Non c'è nessun token da creare o configurare. Per chiamare l'API serve soltanto
 l'URL pubblico generato da Gradio, per esempio:
@@ -10,12 +12,13 @@ l'URL pubblico generato da Gradio, per esempio:
 https://abc123.gradio.live
 ```
 
-## I due endpoint disponibili
+## Endpoint disponibili
 
 | Endpoint | Cosa fa | Input |
 |---|---|---|
 | `upscale_models` | Restituisce tutti i modelli disponibili | Nessuno |
 | `upscale_image` | Esegue l'upscaling | Immagine base64 e nome modello |
+| `upscale_video_chunk` | Upscala ed encode un segmento MP4 | MP4 base64, modello, frame attesi (1–100) |
 
 Il flusso da integrare è questo:
 
@@ -24,7 +27,9 @@ Il flusso da integrare è questo:
 2. Mostra i modelli nel tuo menu/dropdown
 3. L'utente sceglie un modello
 4. Chiama upscale_image con immagine + nome scelto
-5. Decodifica e salva l'immagine restituita
+5. Per una foto chiama `upscale_image`; per un video distribuisci segmenti da
+   100 frame con `upscale_video_chunk`
+6. Salva ogni segmento restituito prima di assegnare altro lavoro
 ```
 
 ## Avviare il server su Colab
@@ -53,6 +58,9 @@ POST {GRADIO_URL}/gradio_api/api/upscale_models
 
 POST {GRADIO_URL}/gradio_api/call/upscale_image
 GET  {GRADIO_URL}/gradio_api/call/upscale_image/{EVENT_ID}
+
+POST {GRADIO_URL}/gradio_api/call/upscale_video_chunk
+GET  {GRADIO_URL}/gradio_api/call/upscale_video_chunk/{EVENT_ID}
 ```
 
 Il client Python incluso gestisce automaticamente anche i percorsi usati dalle
@@ -204,6 +212,45 @@ La risposta utile, cioè il primo elemento della lista, ha questa struttura:
 
 Il campo `image` contiene il risultato. Rimuovi la parte prima della virgola,
 decodifica il resto da base64 e ottieni i bytes dell'immagine.
+
+## 3. Upscaling di un segmento video
+
+Il catalogo espone il contratto supportato:
+
+```json
+{"api_version":2,"capabilities":{"image_upscale":true,"video_chunks":true,"chunk_frames":100}}
+```
+
+`upscale_video_chunk` accetta esattamente tre valori ordinati:
+
+```text
+data[0] = MP4 come data:video/mp4;base64,...
+data[1] = nome modello
+data[2] = numero esatto di frame, da 1 a 100
+```
+
+Il risultato contiene un MP4 H.264 senza audio e i metadati verificabili:
+
+```json
+{
+  "ok": true,
+  "api_version": 2,
+  "video": "data:video/mp4;base64,...",
+  "model": "RealESRGAN_x4plus",
+  "scale": 4,
+  "device": "GPU (CUDA)",
+  "frame_count": 100,
+  "fps": 30.0,
+  "width": 3840,
+  "height": 2160
+}
+```
+
+Il server rifiuta segmenti con più di 100 frame o con un conteggio diverso da
+quello dichiarato. I file temporanei della richiesta vengono eliminati dopo
+aver costruito la risposta. L'audio non attraversa Colab: resta nel file
+originale e viene ripristinato una sola volta dal coordinatore locale dopo aver
+verificato e ordinato tutti i segmenti.
 
 ## Codice REST pronto da copiare
 
