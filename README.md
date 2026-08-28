@@ -59,8 +59,10 @@ The Gradio interface will open in a new browser tab. You're ready to use all the
 
 The public Gradio URL exposes `upscale_image` for photos and
 `upscale_video_chunk` for bounded MP4 segments. MLSM Studio uses the second API
-to distribute configurable video chunks (100 frames by default) across multiple Colab GPUs in parallel, while
-keeping every completed segment as a resumable local checkpoint:
+to distribute configurable video chunks (100 frames by default) across multiple
+Colab GPUs in parallel. API v4 streams frame-level progress, speed and ETA for
+every active Colab over the same Gradio SSE response, so long chunks never
+appear stalled; every completed segment remains a resumable local checkpoint:
 
 ```bash
 python remote_upscale_client.py \

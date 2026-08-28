@@ -179,7 +179,7 @@ def test_server_api_lists_models():
     assert result["default_model"] == "RealESRGAN_x4plus"
     assert [model["name"] for model in result["models"]] == list(MODELS.keys())
     assert result["models"][0]["scale"] == MODELS["RealESRGAN_x4plus"]["scale"]
-    assert result["api_version"] == 3
+    assert result["api_version"] == 4
     assert result["capabilities"] == {
         "image_upscale": True,
         "video_chunks": True,
@@ -187,6 +187,8 @@ def test_server_api_lists_models():
         "max_chunk_frames": MAX_VIDEO_CHUNK_FRAMES,
         "preserve_source_fps": True,
         "optional_output_fps": True,
+        "video_chunk_progress": True,
+        "video_chunk_progress_version": 1,
     }
 
 
@@ -224,15 +226,17 @@ def test_server_video_chunk_api_returns_exact_metadata_and_cleans_workspace(tmp_
 
     tab._stream_upscaled_video = Mock(side_effect=stream)
 
-    result = tab.upscale_video_chunk_api(
+    events = list(tab.upscale_video_chunk_api(
         video_file_to_data_url(source, max_bytes=1024),
         "RealESRGAN_x2plus",
         100,
-    )
+    ))
+    result = events[-1]
 
     assert result["ok"] is True
     assert result["frame_count"] == 100
     assert result["video"].startswith("data:video/mp4;base64,")
+    assert any(item.get("event") == "progress" and item.get("state") == "finalizing" for item in events)
     assert not chunks_root.exists() or list(chunks_root.iterdir()) == []
 
 
@@ -251,13 +255,42 @@ def test_server_video_chunk_api_accepts_large_batches_and_explicit_fps(tmp_path)
         return {"frame_count": 300, "fps": 59.94, "width": 1280, "height": 720, "elapsed_seconds": 2.5}
 
     tab._stream_upscaled_video = Mock(side_effect=stream)
-    result = tab.upscale_video_chunk_api(
+    result = list(tab.upscale_video_chunk_api(
         video_file_to_data_url(source, max_bytes=1024), "RealESRGAN_x2plus", 300, 59.94
-    )
+    ))[-1]
 
     assert result["ok"] is True
     assert result["frame_count"] == 300
     assert result["fps"] == 59.94
+
+
+def test_server_video_chunk_api_streams_real_frame_progress(tmp_path):
+    tab, _ = make_upscaler()
+    tab.temp_manager.create_temp_subdir.return_value = tmp_path / "api_video_chunks"
+    tab.load_model = Mock(return_value="loaded")
+    tab.upsampler = Mock()
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"\x00\x00\x00\x18ftypisominput")
+
+    def stream(_source, output, _model, **options):
+        options["on_frame"](1, 4, 0.5, 0.5)
+        options["on_frame"](2, 4, 0.4, 0.9)
+        Path(output).write_bytes(b"\x00\x00\x00\x18ftypisomoutput")
+        return {"frame_count": 4, "fps": 24.0, "width": 128, "height": 72, "elapsed_seconds": 1.8}
+
+    tab._stream_upscaled_video = Mock(side_effect=stream)
+    events = list(tab.upscale_video_chunk_api(
+        video_file_to_data_url(source, max_bytes=1024), "RealESRGAN_x2plus", 4
+    ))
+    progress = [item for item in events if item.get("event") == "progress"]
+
+    assert progress
+    assert any(item["state"] == "upscaling" and item["completed_frames"] == 2 for item in progress)
+    update = next(item for item in progress if item["state"] == "upscaling" and item["completed_frames"] == 2)
+    assert update["progress"] == pytest.approx(0.5)
+    assert update["seconds_per_frame"] == pytest.approx(0.45)
+    assert update["estimated_remaining_seconds"] == pytest.approx(0.9)
+    assert events[-1]["ok"] is True
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")

@@ -199,10 +199,16 @@ You'll get a public URL like: `https://xxxxx.gradio.live`
 
 ### Remote Upscaling API
 
-The same public URL exposes two named endpoints:
+The same public URL exposes three named endpoints:
 
 - `upscale_models` returns the model names, scales, and descriptions;
-- `upscale_image` receives an image or OpenCV frame plus the selected model.
+- `upscale_image` receives an image or OpenCV frame plus the selected model;
+- `upscale_video_chunk` receives a bounded MP4 segment and streams frame-level
+  progress, speed and ETA before returning the upscaled MP4.
+
+The progress stream is available with API v4. A Colab session already running
+older code must be stopped and rerun after the repository update; old sessions
+remain usable but cannot report progress inside a segment.
 
 From the local repository, call it with:
 

@@ -29,7 +29,9 @@ Il flusso da integrare è questo:
 4. Chiama upscale_image con immagine + nome scelto
 5. Per una foto chiama `upscale_image`; per un video distribuisci segmenti da
    il numero configurato di frame con `upscale_video_chunk`
-6. Salva ogni segmento restituito prima di assegnare altro lavoro
+6. Durante la GET leggi gli eventi `generating` per mostrare il progresso frame
+   del singolo endpoint
+7. Salva ogni segmento restituito prima di assegnare altro lavoro
 ```
 
 ## Avviare il server su Colab
@@ -45,11 +47,13 @@ avvio dovrai aggiornare l'URL nella tua applicazione.
 
 ## Come funzionano le chiamate REST Gradio
 
-I due endpoint si chiamano in modo diverso:
+Gli endpoint si chiamano in modo diverso:
 
 - `upscale_models` è immediato e richiede una sola `POST`;
 - `upscale_image` usa la coda Gradio perché l'elaborazione può durare: una
-  `POST` crea il job e una `GET` recupera il risultato.
+  `POST` crea il job e una `GET` recupera il risultato;
+- `upscale_video_chunk` usa la stessa coda, ma la `GET` invia anche gli eventi
+  intermedi di avanzamento prima del risultato MP4.
 
 Le chiamate complete sono:
 
@@ -215,10 +219,10 @@ decodifica il resto da base64 e ottieni i bytes dell'immagine.
 
 ## 3. Upscaling di un segmento video
 
-Il catalogo espone il contratto supportato:
+Il catalogo API v4 espone il contratto supportato:
 
 ```json
-{"api_version":3,"capabilities":{"image_upscale":true,"video_chunks":true,"chunk_frames":100,"max_chunk_frames":5000,"preserve_source_fps":true,"optional_output_fps":true}}
+{"api_version":4,"capabilities":{"image_upscale":true,"video_chunks":true,"chunk_frames":100,"max_chunk_frames":5000,"preserve_source_fps":true,"optional_output_fps":true,"video_chunk_progress":true,"video_chunk_progress_version":1}}
 ```
 
 `upscale_video_chunk` accetta quattro valori ordinati:
@@ -230,12 +234,27 @@ data[2] = numero esatto di frame, da 1 a max_chunk_frames
 data[3] = FPS di uscita; 0 mantiene gli FPS del segmento
 ```
 
-Il risultato contiene un MP4 H.264 senza audio e i metadati verificabili:
+Durante la stessa `GET`, prima dell'evento `complete`, l'endpoint invia eventi
+SSE `generating` con un oggetto di avanzamento. Non serve aprire una seconda
+connessione né interrogare periodicamente il server:
+
+```text
+event: generating
+data: [{"ok":true,"event":"progress","state":"upscaling","completed_frames":42,"total_frames":100,"progress":0.42,"elapsed_seconds":73.5,"estimated_remaining_seconds":101.5,"seconds_per_frame":1.75,"last_frame_seconds":1.69,"message":"Upscaling frame 42/100","updated_at_ms":1787900000000}]
+```
+
+Gli stati possibili sono `receiving`, `loading_model`, `upscaling` e
+`finalizing`. Il client deve ignorare eventuali campi sconosciuti e continuare
+ad attendere `event: complete`, che contiene il video definitivo. Le versioni
+API 3 non inviano gli eventi intermedi ma restano compatibili con il risultato
+finale.
+
+Il risultato conclusivo contiene un MP4 H.264 senza audio e i metadati verificabili:
 
 ```json
 {
   "ok": true,
-  "api_version": 3,
+  "api_version": 4,
   "video": "data:video/mp4;base64,...",
   "model": "RealESRGAN_x4plus",
   "scale": 4,

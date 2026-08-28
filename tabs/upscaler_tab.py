@@ -16,6 +16,8 @@ import subprocess
 import time
 import shutil
 import uuid
+import queue
+import threading
 
 from utils.remote_upscale import (
     decode_image_data_url,
@@ -104,7 +106,7 @@ class UpscalerTab:
         )
         return {
             "ok": True,
-            "api_version": 3,
+            "api_version": 4,
             "capabilities": {
                 "image_upscale": True,
                 "video_chunks": True,
@@ -112,6 +114,8 @@ class UpscalerTab:
                 "max_chunk_frames": MAX_VIDEO_CHUNK_FRAMES,
                 "preserve_source_fps": True,
                 "optional_output_fps": True,
+                "video_chunk_progress": True,
+                "video_chunk_progress_version": 1,
             },
             "default_model": default_model,
             "models": [
@@ -275,50 +279,125 @@ class UpscalerTab:
             capture.release()
 
     def upscale_video_chunk_api(self, video_payload, model_name, expected_frames, output_fps=0):
-        """Upscale one bounded MP4 chunk for MLSM Studio's parallel scheduler."""
+        """Stream frame-level progress, then return one upscaled MP4 chunk."""
         if model_name not in MODELS:
-            return {"ok": False, "error": f"Unsupported model: {model_name}", "available_models": list(MODELS.keys())}
-        try:
-            expected = int(expected_frames)
-            if expected < 1 or expected > MAX_VIDEO_CHUNK_FRAMES:
-                raise ValueError(f"A video chunk must contain from 1 to {MAX_VIDEO_CHUNK_FRAMES} frames")
-            requested_fps = float(output_fps or 0)
-            if not np.isfinite(requested_fps) or requested_fps < 0:
-                raise ValueError("Output FPS must be 0 (original) or a positive finite value")
-            max_input_mb = max(1, float(os.getenv("UPSCALE_API_MAX_VIDEO_INPUT_MB", "256")))
-            max_output_mb = max(1, float(os.getenv("UPSCALE_API_MAX_VIDEO_OUTPUT_MB", "1024")))
-            source_bytes = decode_video_data_url(video_payload, max_bytes=int(max_input_mb * 1024 * 1024))
-            job_dir = self.temp_manager.create_temp_subdir("api_video_chunks") / uuid.uuid4().hex
-            job_dir.mkdir(parents=True, exist_ok=False)
-            source_path = job_dir / "input.mp4"
-            output_path = job_dir / "upscaled.mp4"
-            source_path.write_bytes(source_bytes)
-            device = self._get_api_device()
-            load_message = self.load_model(model_name, device)
-            if self.upsampler is None:
-                raise RuntimeError(load_message)
-            metadata = self._stream_upscaled_video(
-                source_path,
-                output_path,
-                model_name,
-                fps_override=requested_fps,
-                expected_frames=expected,
-                crf=12,
-            )
-            return {
+            yield {"ok": False, "error": f"Unsupported model: {model_name}", "available_models": list(MODELS.keys())}
+            return
+
+        # A small bounded buffer preserves short bursts (e.g. very small
+        # frames) while still coalescing instead of retaining thousands of
+        # progress dictionaries for a slow/disconnected SSE consumer.
+        updates = queue.Queue(maxsize=32)
+        completed = threading.Event()
+        result = {}
+
+        def publish(state, done, total, *, elapsed=0.0, frame_seconds=None, message=""):
+            total = max(1, int(total))
+            done = max(0, min(total, int(done)))
+            average = elapsed / done if done and elapsed > 0 else None
+            remaining = average * (total - done) if average is not None else None
+            item = {
                 "ok": True,
-                "api_version": 3,
-                "video": video_file_to_data_url(output_path, max_bytes=int(max_output_mb * 1024 * 1024)),
-                "model": model_name,
-                "scale": MODELS[model_name]["scale"],
-                "device": device,
-                **metadata,
+                "event": "progress",
+                "state": state,
+                "completed_frames": done,
+                "total_frames": total,
+                "progress": done / total,
+                "elapsed_seconds": elapsed,
+                "estimated_remaining_seconds": remaining,
+                "seconds_per_frame": average,
+                "last_frame_seconds": frame_seconds,
+                "message": message,
+                "updated_at_ms": int(time.time() * 1000),
             }
-        except Exception as exc:
-            return {"ok": False, "error": str(exc)}
+            try:
+                updates.put_nowait(item)
+            except queue.Full:
+                try:
+                    updates.get_nowait()
+                except queue.Empty:
+                    pass
+                try:
+                    updates.put_nowait(item)
+                except queue.Full:
+                    pass
+
+        def execute():
+            job_dir = None
+            try:
+                expected = int(expected_frames)
+                if expected < 1 or expected > MAX_VIDEO_CHUNK_FRAMES:
+                    raise ValueError(f"A video chunk must contain from 1 to {MAX_VIDEO_CHUNK_FRAMES} frames")
+                requested_fps = float(output_fps or 0)
+                if not np.isfinite(requested_fps) or requested_fps < 0:
+                    raise ValueError("Output FPS must be 0 (original) or a positive finite value")
+                publish("receiving", 0, expected, message="Decodifica del segmento ricevuto")
+                max_input_mb = max(1, float(os.getenv("UPSCALE_API_MAX_VIDEO_INPUT_MB", "256")))
+                max_output_mb = max(1, float(os.getenv("UPSCALE_API_MAX_VIDEO_OUTPUT_MB", "1024")))
+                source_bytes = decode_video_data_url(video_payload, max_bytes=int(max_input_mb * 1024 * 1024))
+                job_dir = self.temp_manager.create_temp_subdir("api_video_chunks") / uuid.uuid4().hex
+                job_dir.mkdir(parents=True, exist_ok=False)
+                source_path = job_dir / "input.mp4"
+                output_path = job_dir / "upscaled.mp4"
+                source_path.write_bytes(source_bytes)
+                device = self._get_api_device()
+                publish("loading_model", 0, expected, message=f"Caricamento {model_name} su {device}")
+                load_message = self.load_model(model_name, device)
+                if self.upsampler is None:
+                    raise RuntimeError(load_message)
+
+                def frame_progress(done, total, frame_seconds, elapsed):
+                    publish(
+                        "upscaling", done, total or expected,
+                        elapsed=elapsed, frame_seconds=frame_seconds,
+                        message=f"Upscaling frame {done}/{total or expected}",
+                    )
+
+                metadata = self._stream_upscaled_video(
+                    source_path,
+                    output_path,
+                    model_name,
+                    fps_override=requested_fps,
+                    expected_frames=expected,
+                    crf=12,
+                    on_frame=frame_progress,
+                )
+                publish(
+                    "finalizing", expected, expected,
+                    elapsed=float(metadata.get("elapsed_seconds") or 0),
+                    message="Codifica e preparazione del segmento completato",
+                )
+                result["value"] = {
+                    "ok": True,
+                    "api_version": 4,
+                    "video": video_file_to_data_url(output_path, max_bytes=int(max_output_mb * 1024 * 1024)),
+                    "model": model_name,
+                    "scale": MODELS[model_name]["scale"],
+                    "device": device,
+                    **metadata,
+                }
+            except Exception as exc:
+                result["value"] = {"ok": False, "error": str(exc)}
+            finally:
+                if job_dir is not None:
+                    shutil.rmtree(job_dir, ignore_errors=True)
+                completed.set()
+
+        worker = threading.Thread(target=execute, name="remote-upscale-chunk", daemon=True)
+        worker.start()
+        try:
+            while not completed.is_set() or not updates.empty():
+                try:
+                    yield updates.get(timeout=0.2)
+                except queue.Empty:
+                    continue
+            worker.join()
+            yield result.get("value", {"ok": False, "error": "Remote chunk worker returned no result"})
         finally:
-            if "job_dir" in locals():
-                shutil.rmtree(job_dir, ignore_errors=True)
+            # If the SSE client disconnects, do not delete files still used by
+            # the GPU worker. The endpoint keeps its concurrency slot until the
+            # exact in-flight segment has reached a safe terminal boundary.
+            worker.join()
     
     def upscale_image(self, input_image, model_name, device, input_format="png"):
         """Upscale a single image"""
