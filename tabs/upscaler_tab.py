@@ -9,6 +9,7 @@ from pathlib import Path
 import gradio as gr
 from basicsr.archs.rrdbnet_arch import RRDBNet
 from realesrgan import RealESRGANer
+from realesrgan.archs.srvgg_arch import SRVGGNetCompact
 from config.config import MODELS
 import ffmpeg
 import os
@@ -18,6 +19,7 @@ import shutil
 import uuid
 import queue
 import threading
+import atexit
 
 from utils.remote_upscale import (
     decode_image_data_url,
@@ -30,6 +32,14 @@ DEFAULT_VIDEO_CHUNK_FRAMES = max(1, int(os.getenv("UPSCALE_API_DEFAULT_CHUNK_FRA
 MAX_VIDEO_CHUNK_FRAMES = max(DEFAULT_VIDEO_CHUNK_FRAMES, int(os.getenv("UPSCALE_API_MAX_CHUNK_FRAMES", "5000")))
 
 
+def _model_choices():
+    """Return Gradio label/value pairs without changing the public model IDs."""
+    return [
+        (config.get("label", name), name)
+        for name, config in MODELS.items()
+    ]
+
+
 class UpscalerTab:
     """Handles image and video upscaling functionality"""
     
@@ -40,6 +50,9 @@ class UpscalerTab:
         self.current_model_name = None
         self.current_device_name = None
         self.upsampler = None
+        self._encoder_lock = threading.Lock()
+        self._active_encoders = set()
+        atexit.register(self.close_active_encoders)
     
     def load_model(self, model_name, device):
         """Load RealESRGAN model"""
@@ -58,13 +71,22 @@ class UpscalerTab:
             self.device_manager.set_device(device)
             torch_device = self.device_manager.get_torch_device()
             
-            # Define model architecture
-            if 'anime' in model_name:
-                model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, 
-                               num_block=6, num_grow_ch=32, scale=scale)
+            # The compact v3 checkpoints are not RRDB weights. Building the
+            # exact upstream architecture is required before RealESRGANer can
+            # load them.
+            if model_config.get("architecture") == "srvggnetcompact":
+                model = SRVGGNetCompact(
+                    num_in_ch=3,
+                    num_out_ch=3,
+                    num_feat=64,
+                    num_conv=model_config["num_conv"],
+                    upscale=scale,
+                    act_type="prelu",
+                )
             else:
                 model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, 
-                               num_block=23, num_grow_ch=32, scale=scale)
+                               num_block=model_config.get("num_block", 23),
+                               num_grow_ch=32, scale=scale)
             
             # Initialize upsampler
             self.upsampler = RealESRGANer(
@@ -106,7 +128,7 @@ class UpscalerTab:
         )
         return {
             "ok": True,
-            "api_version": 4,
+            "api_version": 5,
             "capabilities": {
                 "image_upscale": True,
                 "video_chunks": True,
@@ -116,11 +138,14 @@ class UpscalerTab:
                 "optional_output_fps": True,
                 "video_chunk_progress": True,
                 "video_chunk_progress_version": 1,
+                "fast_chunk_encoder": True,
+                "encoder_cleanup": True,
             },
             "default_model": default_model,
             "models": [
                 {
                     "name": name,
+                    "label": config.get("label", name),
                     "scale": config["scale"],
                     "description": config["description"],
                     "default": name == default_model,
@@ -171,25 +196,71 @@ class UpscalerTab:
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
 
-    @staticmethod
-    def _start_raw_video_encoder(output_path, width, height, fps, *, crf=18):
-        """Start a fast H.264 encoder fed with OpenCV BGR frames on stdin."""
+    def _start_raw_video_encoder(self, output_path, width, height, fps, *, crf=18):
+        """Start a bounded low-latency H.264 transport encoder.
+
+        RealESRGAN inference must remain the dominant workload.  x264's default
+        thread fan-out can otherwise consume every Colab CPU core and starve
+        OpenCV while the GPU waits for the next frame.
+        """
         ffmpeg_executable = shutil.which("ffmpeg")
         if not ffmpeg_executable:
             raise RuntimeError("ffmpeg is required to encode an upscaled video")
+        try:
+            encoder_threads = max(1, min(8, int(os.getenv("UPSCALE_API_ENCODER_THREADS", "2"))))
+        except ValueError:
+            encoder_threads = 2
+        preset = os.getenv("UPSCALE_API_ENCODER_PRESET", "ultrafast").strip().lower()
+        if preset not in {"ultrafast", "superfast", "veryfast"}:
+            preset = "ultrafast"
         command = [
             ffmpeg_executable, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
             "-f", "rawvideo", "-pix_fmt", "bgr24", "-s:v", f"{width}x{height}",
             "-r", f"{fps:.8f}", "-i", "pipe:0", "-an", "-c:v", "libx264",
-            "-preset", "veryfast", "-crf", str(crf), "-pix_fmt", "yuv420p",
+            "-preset", preset, "-tune", "zerolatency", "-threads", str(encoder_threads),
+            "-crf", str(crf), "-pix_fmt", "yuv420p",
             "-movflags", "+faststart", str(output_path),
         ]
-        return subprocess.Popen(
+        process = subprocess.Popen(
             command,
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
         )
+        with self._encoder_lock:
+            self._active_encoders.add(process)
+        return process
+
+    def _forget_encoder(self, process):
+        with self._encoder_lock:
+            self._active_encoders.discard(process)
+
+    @staticmethod
+    def _stop_encoder(process):
+        if process.poll() is not None:
+            return
+        try:
+            if process.stdin:
+                process.stdin.close()
+        except (OSError, ValueError):
+            pass
+        process.terminate()
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=2)
+
+    def close_active_encoders(self):
+        """Never leave FFmpeg children alive after the app/runtime closes."""
+        with self._encoder_lock:
+            processes = list(self._active_encoders)
+            self._active_encoders.clear()
+        for process in processes:
+            try:
+                self._stop_encoder(process)
+            except (OSError, ProcessLookupError, subprocess.TimeoutExpired):
+                pass
 
     def _stream_upscaled_video(
         self,
@@ -253,6 +324,7 @@ class UpscalerTab:
             process.stdin.close()
             stderr = process.stderr.read().decode("utf-8", "replace") if process.stderr else ""
             return_code = process.wait()
+            self._forget_encoder(process)
             if return_code:
                 raise RuntimeError(f"ffmpeg encoding failed: {stderr.strip() or return_code}")
             return {
@@ -264,15 +336,10 @@ class UpscalerTab:
                 "source_height": source_height,
                 "elapsed_seconds": time.time() - started_at,
             }
-        except Exception:
-            if process is not None and process.poll() is None:
-                if process.stdin:
-                    try:
-                        process.stdin.close()
-                    except OSError:
-                        pass
-                process.kill()
-                process.wait()
+        except BaseException:
+            if process is not None:
+                self._stop_encoder(process)
+                self._forget_encoder(process)
             Path(output_path).unlink(missing_ok=True)
             raise
         finally:
@@ -359,7 +426,7 @@ class UpscalerTab:
                     model_name,
                     fps_override=requested_fps,
                     expected_frames=expected,
-                    crf=12,
+                    crf=14,
                     on_frame=frame_progress,
                 )
                 publish(
@@ -369,7 +436,7 @@ class UpscalerTab:
                 )
                 result["value"] = {
                     "ok": True,
-                    "api_version": 4,
+                    "api_version": 5,
                     "video": video_file_to_data_url(output_path, max_bytes=int(max_output_mb * 1024 * 1024)),
                     "model": model_name,
                     "scale": MODELS[model_name]["scale"],
@@ -615,7 +682,7 @@ class UpscalerTab:
                     # Model and device selection in collapsible accordion
                     with gr.Accordion("🔧 Select Model & Device", open=False):
                         model_dropdown = gr.Radio(
-                            choices=list(MODELS.keys()),
+                            choices=_model_choices(),
                             value="RealESRGAN_x4plus",
                             label="Select Model",
                             info="Choose the upscaling model"
@@ -694,7 +761,7 @@ class UpscalerTab:
             with gr.Group(visible=False):
                 api_image_payload = gr.Textbox(label="Base64 image or data URL")
                 api_model_name = gr.Dropdown(
-                    choices=list(MODELS.keys()),
+                    choices=_model_choices(),
                     value="RealESRGAN_x4plus",
                     label="Model",
                 )
@@ -703,7 +770,7 @@ class UpscalerTab:
                 api_models_result = gr.JSON(label="Available upscaling models")
                 api_models_button = gr.Button("API Models")
                 api_video_payload = gr.Textbox(label="Base64 MP4 chunk")
-                api_video_model = gr.Dropdown(choices=list(MODELS.keys()), value="RealESRGAN_x4plus", label="Chunk model")
+                api_video_model = gr.Dropdown(choices=_model_choices(), value="RealESRGAN_x4plus", label="Chunk model")
                 api_video_frames = gr.Number(value=DEFAULT_VIDEO_CHUNK_FRAMES, minimum=1, maximum=MAX_VIDEO_CHUNK_FRAMES, precision=0, label="Expected frames")
                 api_video_fps = gr.Number(value=0, minimum=0, label="Output FPS (0 = chunk original)")
                 api_video_result = gr.JSON(label="Video chunk API response")

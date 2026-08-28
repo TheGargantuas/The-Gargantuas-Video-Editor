@@ -6,7 +6,7 @@ import json
 import shutil
 import subprocess
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
@@ -14,7 +14,7 @@ import requests
 from PIL import Image
 
 from config.config import MODELS
-from tabs.upscaler_tab import MAX_VIDEO_CHUNK_FRAMES, UpscalerTab
+from tabs.upscaler_tab import MAX_VIDEO_CHUNK_FRAMES, UpscalerTab, _model_choices
 from utils.remote_upscale import (
     RemoteUpscaleClient,
     RemoteUpscaleError,
@@ -179,7 +179,13 @@ def test_server_api_lists_models():
     assert result["default_model"] == "RealESRGAN_x4plus"
     assert [model["name"] for model in result["models"]] == list(MODELS.keys())
     assert result["models"][0]["scale"] == MODELS["RealESRGAN_x4plus"]["scale"]
-    assert result["api_version"] == 4
+    catalog = {
+        model["name"]: (model["label"], model["scale"])
+        for model in result["models"]
+    }
+    assert catalog["realesr-general-x4v3"] == ("RealESR General x4v3 · 4×", 4)
+    assert catalog["realesr-animevideov3"] == ("RealESR AnimeVideo v3 · 4×", 4)
+    assert result["api_version"] == 5
     assert result["capabilities"] == {
         "image_upscale": True,
         "video_chunks": True,
@@ -189,7 +195,58 @@ def test_server_api_lists_models():
         "optional_output_fps": True,
         "video_chunk_progress": True,
         "video_chunk_progress_version": 1,
+        "fast_chunk_encoder": True,
+        "encoder_cleanup": True,
     }
+
+
+def test_standalone_model_menu_exposes_the_two_compact_video_models():
+    labels_by_model = {model_name: label for label, model_name in _model_choices()}
+
+    assert labels_by_model["realesr-general-x4v3"] == "RealESR General x4v3 · 4×"
+    assert labels_by_model["realesr-animevideov3"] == "RealESR AnimeVideo v3 · 4×"
+
+
+@pytest.mark.parametrize(
+    ("model_name", "expected_num_conv"),
+    [
+        ("realesr-general-x4v3", 32),
+        ("realesr-animevideov3", 16),
+    ],
+)
+def test_compact_video_models_use_the_official_srvgg_architecture(
+    model_name,
+    expected_num_conv,
+):
+    tab, device_manager = make_upscaler()
+    device_manager.get_torch_device.return_value = "cpu"
+    compact_model = Mock(name=f"{model_name}-architecture")
+
+    with (
+        patch("tabs.upscaler_tab.SRVGGNetCompact", return_value=compact_model) as architecture,
+        patch("tabs.upscaler_tab.RealESRGANer") as upsampler,
+    ):
+        result = tab.load_model(model_name, "CPU")
+
+    assert result == f"✓ Model {model_name} loaded successfully on CPU"
+    architecture.assert_called_once_with(
+        num_in_ch=3,
+        num_out_ch=3,
+        num_feat=64,
+        num_conv=expected_num_conv,
+        upscale=4,
+        act_type="prelu",
+    )
+    upsampler.assert_called_once_with(
+        scale=4,
+        model_path=MODELS[model_name]["url"],
+        model=compact_model,
+        tile=0,
+        tile_pad=10,
+        pre_pad=0,
+        half=False,
+        device="cpu",
+    )
 
 
 def test_video_data_url_round_trip_and_signature_validation(tmp_path):
@@ -220,7 +277,7 @@ def test_server_video_chunk_api_returns_exact_metadata_and_cleans_workspace(tmp_
     def stream(_source, output, _model, **options):
         assert options["expected_frames"] == 100
         assert options["fps_override"] == 0
-        assert options["crf"] == 12
+        assert options["crf"] == 14
         Path(output).write_bytes(b"\x00\x00\x00\x18ftypisomoutput")
         return {"frame_count": 100, "fps": 30.0, "width": 1280, "height": 720, "elapsed_seconds": 2.5}
 
@@ -291,6 +348,23 @@ def test_server_video_chunk_api_streams_real_frame_progress(tmp_path):
     assert update["seconds_per_frame"] == pytest.approx(0.45)
     assert update["estimated_remaining_seconds"] == pytest.approx(0.9)
     assert events[-1]["ok"] is True
+
+
+def test_chunk_encoder_is_low_latency_and_cpu_bounded(tmp_path, monkeypatch):
+    tab, _ = make_upscaler()
+    process = Mock()
+    monkeypatch.setenv("UPSCALE_API_ENCODER_THREADS", "2")
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/ffmpeg" if name == "ffmpeg" else None)
+    popen = Mock(return_value=process)
+    monkeypatch.setattr(subprocess, "Popen", popen)
+
+    assert tab._start_raw_video_encoder(tmp_path / "chunk.mp4", 1920, 1080, 29.97, crf=14) is process
+    command = popen.call_args.args[0]
+    assert command[command.index("-preset") + 1] == "ultrafast"
+    assert command[command.index("-tune") + 1] == "zerolatency"
+    assert command[command.index("-threads") + 1] == "2"
+    assert command[command.index("-crf") + 1] == "14"
+    tab._forget_encoder(process)
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")

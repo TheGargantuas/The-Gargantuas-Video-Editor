@@ -60,7 +60,7 @@ The Gradio interface will open in a new browser tab. You're ready to use all the
 The public Gradio URL exposes `upscale_image` for photos and
 `upscale_video_chunk` for bounded MP4 segments. MLSM Studio uses the second API
 to distribute configurable video chunks (100 frames by default) across multiple
-Colab GPUs in parallel. API v4 streams frame-level progress, speed and ETA for
+Colab GPUs in parallel. API v5 streams frame-level progress, speed and ETA for
 every active Colab over the same Gradio SSE response, so long chunks never
 appear stalled; every completed segment remains a resumable local checkpoint:
 
@@ -197,11 +197,12 @@ The upscaled result will appear on the right once processing is complete.
 ![Upload and Elaboration](img/gradio/upload_elab.png)
 
 #### 3. Video Comparison Modal
-Compare all models side-by-side! This modal displays 4 pairs of videos:
+Compare the four models that currently include bundled demo videos side-by-side:
 - Left side: Original base video
 - Right side: Upscaled result for each of the 4 models
 
-Perfect for choosing the best model for your content!
+The two compact video models are available in the Upscaler selector and through
+the remote API; they do not require bundled example media.
 
 ![Models Comparison](img/gradio/models_comparison.png)
 
@@ -213,6 +214,8 @@ Perfect for choosing the best model for your content!
 | **RealESRGAN_x2plus** | 2x scale, lighter upscaling | [▶️ Base](example/example_video/base.mp4) | [▶️ Upscaled](example/example_video/example%20RealESRGAN_x2plus.mp4) |
 | **RealESRNet_x4plus** | 4x scale, cleaner output | [▶️ Base](example/example_video/base.mp4) | [▶️ Upscaled](example/example_video/example%20RealESRNet_x4plus.mp4) |
 | **RealESRGAN_x4plus_anime_6B** | 4x scale, optimized for anime/cartoon content | [▶️ Base](example/example_video/base.mp4) | [▶️ Upscaled](example/example_video/example%20RealESRGAN_x4plus_anime_6B.mp4) |
+| **RealESR General x4v3** | Fast, memory-efficient 4x enhancement for real-world photos and video | — | — |
+| **RealESR AnimeVideo v3** | Fast 4x enhancement optimized for anime and animated video | — | — |
 
 > 💡 **Tip**: Download the repository to view the example videos locally and compare the quality differences between models.
 
@@ -231,7 +234,7 @@ Perfect for choosing the best model for your content!
 
 ### Video Comparison Modal
 - Side-by-side comparison of original vs upscaled videos
-- Example videos for all models included
+- Example videos for the four original models included
 - Synchronized playback controls
 - Loop functionality for continuous comparison
 - Native aspect ratio preservation

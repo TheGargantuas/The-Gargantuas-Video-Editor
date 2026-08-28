@@ -21,6 +21,8 @@ MODELS = {
     "RealESRGAN_x4plus": {
         "scale": 4,
         "model_name": "RealESRGAN_x4plus",
+        "architecture": "rrdbnet",
+        "num_block": 23,
         "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth",
         "description": "General purpose, best quality/performance balance",
         "default": True
@@ -28,20 +30,44 @@ MODELS = {
     "RealESRGAN_x2plus": {
         "scale": 2,
         "model_name": "RealESRGAN_x2plus",
+        "architecture": "rrdbnet",
+        "num_block": 23,
         "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth",
         "description": "Lighter upscaling"
     },
     "RealESRNet_x4plus": {
         "scale": 4,
         "model_name": "RealESRNet_x4plus",
+        "architecture": "rrdbnet",
+        "num_block": 23,
         "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.1/RealESRNet_x4plus.pth",
         "description": "Cleaner, less aggressive enhancement"
     },
     "RealESRGAN_x4plus_anime_6B": {
         "scale": 4,
         "model_name": "RealESRGAN_x4plus_anime_6B",
+        "architecture": "rrdbnet",
+        "num_block": 6,
         "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth",
         "description": "Optimized for anime/cartoon content"
+    },
+    "realesr-general-x4v3": {
+        "label": "RealESR General x4v3 · 4×",
+        "scale": 4,
+        "model_name": "realesr-general-x4v3",
+        "architecture": "srvggnetcompact",
+        "num_conv": 32,
+        "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-x4v3.pth",
+        "description": "Fast, memory-efficient 4× enhancement for real-world photos and video"
+    },
+    "realesr-animevideov3": {
+        "label": "RealESR AnimeVideo v3 · 4×",
+        "scale": 4,
+        "model_name": "realesr-animevideov3",
+        "architecture": "srvggnetcompact",
+        "num_conv": 16,
+        "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-animevideov3.pth",
+        "description": "Fast 4× enhancement optimized for anime and animated video"
     }
 }
 

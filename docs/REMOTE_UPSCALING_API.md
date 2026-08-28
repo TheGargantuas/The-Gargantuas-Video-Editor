@@ -120,34 +120,53 @@ Nel tuo codice la risposta utile si legge quindi con
   "models": [
     {
       "name": "RealESRGAN_x4plus",
+      "label": "RealESRGAN_x4plus",
       "scale": 4,
       "description": "General purpose, best quality/performance balance",
       "default": true
     },
     {
       "name": "RealESRGAN_x2plus",
+      "label": "RealESRGAN_x2plus",
       "scale": 2,
       "description": "Lighter upscaling",
       "default": false
     },
     {
       "name": "RealESRNet_x4plus",
+      "label": "RealESRNet_x4plus",
       "scale": 4,
       "description": "Cleaner, less aggressive enhancement",
       "default": false
     },
     {
       "name": "RealESRGAN_x4plus_anime_6B",
+      "label": "RealESRGAN_x4plus_anime_6B",
       "scale": 4,
       "description": "Optimized for anime/cartoon content",
+      "default": false
+    },
+    {
+      "name": "realesr-general-x4v3",
+      "label": "RealESR General x4v3 · 4×",
+      "scale": 4,
+      "description": "Fast, memory-efficient 4× enhancement for real-world photos and video",
+      "default": false
+    },
+    {
+      "name": "realesr-animevideov3",
+      "label": "RealESR AnimeVideo v3 · 4×",
+      "scale": 4,
+      "description": "Fast 4× enhancement optimized for anime and animated video",
       "default": false
     }
   ]
 }
 ```
 
-Nella tua applicazione usa `models[].name` come valore del menu e
-`models[].description` come testo visibile. Non mantenere una lista di modelli
+Nella tua applicazione usa `models[].name` come valore inviato all'API,
+`models[].label` come testo del menu e `models[].description` come spiegazione.
+Non mantenere una lista di modelli
 hardcoded: richiamando questo endpoint la tua app vedrà automaticamente eventuali
 modelli aggiunti in futuro.
 
@@ -219,10 +238,10 @@ decodifica il resto da base64 e ottieni i bytes dell'immagine.
 
 ## 3. Upscaling di un segmento video
 
-Il catalogo API v4 espone il contratto supportato:
+Il catalogo API v5 espone il contratto supportato:
 
 ```json
-{"api_version":4,"capabilities":{"image_upscale":true,"video_chunks":true,"chunk_frames":100,"max_chunk_frames":5000,"preserve_source_fps":true,"optional_output_fps":true,"video_chunk_progress":true,"video_chunk_progress_version":1}}
+{"api_version":5,"capabilities":{"image_upscale":true,"video_chunks":true,"chunk_frames":100,"max_chunk_frames":5000,"preserve_source_fps":true,"optional_output_fps":true,"video_chunk_progress":true,"video_chunk_progress_version":1,"fast_chunk_encoder":true,"encoder_cleanup":true}}
 ```
 
 `upscale_video_chunk` accetta quattro valori ordinati:
@@ -254,7 +273,7 @@ Il risultato conclusivo contiene un MP4 H.264 senza audio e i metadati verificab
 ```json
 {
   "ok": true,
-  "api_version": 4,
+  "api_version": 5,
   "video": "data:video/mp4;base64,...",
   "model": "RealESRGAN_x4plus",
   "scale": 4,
@@ -271,6 +290,13 @@ quello dichiarato. I file temporanei della richiesta vengono eliminati dopo
 aver costruito la risposta. L'audio non attraversa Colab: resta nel file
 originale e viene ripristinato una sola volta dal coordinatore locale dopo aver
 verificato e ordinato tutti i segmenti.
+
+L'API v5 codifica i segmenti con un profilo H.264 di trasporto a latenza minima
+e un numero limitato di thread CPU: RealESRGAN resta il carico dominante e
+OpenCV non viene affamato dall'encoder. I processi FFmpeg attivi sono registrati,
+terminati e attesi alla chiusura dell'app o in caso di errore/interruzione.
+`UPSCALE_API_ENCODER_THREADS` (default `2`) e `UPSCALE_API_ENCODER_PRESET`
+(default `ultrafast`) consentono un override esplicito sul server.
 
 Sia l'interfaccia standalone sia l'API mantengono per default tutti i frame e
 il frame rate originale. Non esiste alcuna conversione automatica a 25 FPS:
@@ -452,7 +478,9 @@ Un errore applicativo viene restituito così:
     "RealESRGAN_x4plus",
     "RealESRGAN_x2plus",
     "RealESRNet_x4plus",
-    "RealESRGAN_x4plus_anime_6B"
+    "RealESRGAN_x4plus_anime_6B",
+    "realesr-general-x4v3",
+    "realesr-animevideov3"
   ]
 }
 ```
