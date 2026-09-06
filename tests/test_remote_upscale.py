@@ -217,7 +217,9 @@ def test_standalone_model_menu_exposes_the_two_compact_video_models():
 def test_compact_video_models_use_the_official_srvgg_architecture(
     model_name,
     expected_num_conv,
+    monkeypatch,
 ):
+    monkeypatch.delenv("UPSCALE_TILE_SIZE", raising=False)
     tab, device_manager = make_upscaler()
     device_manager.get_torch_device.return_value = "cpu"
     compact_model = Mock(name=f"{model_name}-architecture")
@@ -241,7 +243,7 @@ def test_compact_video_models_use_the_official_srvgg_architecture(
         scale=4,
         model_path=MODELS[model_name]["url"],
         model=compact_model,
-        tile=0,
+        tile=256,
         tile_pad=10,
         pre_pad=0,
         half=False,

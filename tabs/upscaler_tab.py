@@ -93,7 +93,7 @@ class UpscalerTab:
                 scale=scale,
                 model_path=model_config['url'],
                 model=model,
-                tile=0,
+                tile=max(64, min(512, int(os.getenv("UPSCALE_TILE_SIZE", "256")))),
                 tile_pad=10,
                 pre_pad=0,
                 half=True if str(torch_device) != 'cpu' else False,
